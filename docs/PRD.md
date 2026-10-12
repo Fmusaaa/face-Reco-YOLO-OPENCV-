@@ -483,6 +483,20 @@ Keluaran: akurasi rank-1, DIR, FRR, FAR per sumber; akurasi per faktor × level;
 
 **Keterbatasan:** jumlah peserta kecil (identifikasi di antara 4–10 orang jauh lebih mudah daripada di antara ribuan), galeri dan foto uji direkam di sesi yang sama (pakaian, rambut, dan cahaya mirip — akurasi lintas hari kemungkinan lebih rendah), dan LBPH sensitif terhadap pergeseran crop.
 
+### E9 — Foto lepas per peserta: OpenCV vs YOLO, crop manual vs otomatis (P0, 12 Oktober 2026)
+
+Ditambahkan 12 Oktober 2026, **sebelum** anotasi dan deteksi apa pun pada foto ini. Data: foto ponsel yang dikumpulkan di luar protokol `capture` di `data/DATASET-MUSANG-PCD/<S01…>/` — ukuran, jarak, dan cahaya tidak terkontrol, tanpa metadata. Hanya peserta dengan `consent_research` = ya; bagian pengenalan hanya peserta dengan `consent_recognition` = ya juga.
+
+| Langkah | Perintah | Keluaran |
+|---|---|---|
+| Crop manual (ground truth, aturan kotak §7) | `annotate --folder data/DATASET-MUSANG-PCD` | `data/annotations/folder_DATASET-MUSANG-PCD.json` |
+| Model 1 — OpenCV | `eval-folder --input … --detectors haar` | deteksi tersimpan di `results/e9_deteksi/` |
+| Model 2 — YOLO | `eval-folder --input … --detectors yolo_n` | perbandingan semua detektor tersimpan di `results/e9/` |
+
+Keluaran: (1) **akurasi deteksi** terhadap crop manual — TP/FP/FN, precision, recall, F1, AP, rerata IoU, FPPI, waktu, pada IoU 0,5 (uji sensitivitas 0,3/0,4), selisih antar detektor dengan bootstrap berpasangan per peserta; (2) **crop manual vs crop otomatis** — per wajah, deteksi ber-IoU tertinggi (satu-satu): IoU, geser pusat, rasio lebar/tinggi, rasio aspek, proporsi crop dengan IoU ≥ 0,5; gambar banding crop berdampingan (internal); (3) **pengenalan LBPH dengan crop manual vs crop otomatis** — pembagian 70/30 per peserta, akurasi rank-1 dan DIR. Grafik 16–19.
+
+**Keterbatasan:** kondisi foto tidak terkontrol, sehingga E9 tidak menggantikan E1–E8 untuk pertanyaan jarak/cahaya/pose; jumlah peserta kecil; galeri dan uji LBPH dari kumpulan foto yang sama; waktu diukur pada resolusi berbeda-beda (kecepatan resmi tetap E4).
+
 ### Ringkasan prioritas
 
 | Eksperimen | Prioritas | Data |
@@ -495,6 +509,7 @@ Keluaran: akurasi rank-1, DIR, FRR, FAR per sumber; akurasi per faktor × level;
 | E6 | P0 | Set pose + ekspresi + oklusi |
 | E7 | P0 | Set jarak (blur simulasi) |
 | E8 | P0 (v4) | Set satu wajah peserta berizin pengenalan |
+| E9 | P0 (12 Okt) | Foto lepas per peserta (`data/DATASET-MUSANG-PCD/`) |
 
 Set kosong ikut dihitung di semua eksperimen untuk FPPI.
 
@@ -521,6 +536,10 @@ Grafik minimum:
 13. Akurasi pengenalan terhadap jarak, kotak manual vs YOLO + LBPH (E8)
 14. Akurasi pengenalan per cahaya, pose, ekspresi, dan penutup wajah (E8)
 15. Kurva DIR–FAR dengan titik ambang config (E8)
+16. Precision, recall, F1, AP per detektor terhadap crop manual (E9)
+17. Sebaran IoU crop otomatis vs crop manual per wajah (E9)
+18. Konvensi kotak: deteksi dalam satuan crop manual (E9)
+19. Akurasi pengenalan LBPH: crop manual vs crop otomatis (E9)
 
 Contoh gambar deteksi hanya memakai wajah subjek yang mencentang izin publikasi; wajah lainnya diburamkan.
 
@@ -651,6 +670,8 @@ pcd-face-detection/
 | `capture --set oklusi --subject S03 --occlusion semua` | Semua penutup wajah berurutan di jarak acuan |
 | `annotate` / `crop` / `validate` | Anotasi, ekspor crop, periksa konsistensi data |
 | `run e1` … `run e8`, `run all` | Eksperimen; `--synthetic` memakai citra sintetis + FakeDetector |
+| `annotate --folder <folder>` | Kotak manual untuk foto lepas `<folder>/S01/*.jpg` berukuran apa saja (E9) |
+| `eval-folder --input <folder> [--detectors haar] [--compare-only]` | E9: deteksi per model (bisa satu per satu), lalu perbandingan semua model yang sudah dijalankan |
 | `report` | Bangun ulang tabel dan grafik dari hasil tersimpan |
 | `demo --detector mp_short` | Demo realtime; tombol untuk ganti detektor saat berjalan, `r` = pengenalan LBPH (v4) |
 | `forget S03` | Hapus seluruh data satu subjek |
@@ -678,6 +699,13 @@ Butir 12–15 ditetapkan 3 Oktober 2026 (v4), sebelum E1–E8 dijalankan pada da
 13. **E8.** Galeri = set jarak di jarak acuan, cahaya normal (5 foto/peserta); foto uji = semua foto satu wajah lain dari peserta yang sama; "acuan" = foto `depan` 100 cm, `netral`, `tanpa`. Ambang `max_distance` 65 dari repo referensi dan **tidak dipilih ulang** dari kurva DIR–FAR. Parameter LBPH bawaan OpenCV. Sumber ujung-ke-ujung = `experiments.e8.detector` (`yolo_n`); pasangan deteksi–wajah = IoU tertinggi ≥ `iou_primary`.
 14. **Izin pengenalan.** Hanya peserta dengan `consent_research` dan `consent_recognition` = ya yang masuk galeri, foto uji, dan FAR. Kolom yang tidak ada dianggap "tidak". Foto peserta lain tetap dipakai E1–E7 sesuai izin v3.
 15. **Galeri operasional** (`enroll`) = semua foto kondisi acuan (±14/peserta) — lebih banyak dari galeri E8, karena dipakai untuk demo dan `crop-faces`, bukan untuk angka penelitian.
+
+Butir 16–19 ditetapkan 12 Oktober 2026 (E9), sebelum foto `DATASET-MUSANG-PCD` dianotasi atau dideteksi:
+
+16. **E9 detektor** = `experiments.e9.detectors` (`haar`, `yolo_n`) dengan parameter titik operasi yang sama dengan E1–E8; run AP terpisah dengan ambang rendah yang sama (§8.2). MediaPipe boleh ditambahkan lewat `--detectors`, tetapi perbandingan utama E9 adalah OpenCV klasik vs YOLO. Foto diproses pada resolusi aslinya, tanpa enhancement.
+17. **E9 crop manual vs otomatis**: pasangan = pencocokan greedy satu-satu dengan IoU > 0 (wajah tanpa pasangan = tidak terdeteksi, IoU 0). "Crop cukup sama" = IoU ≥ `iou_primary` (0,5). Crop otomatis memakai kotak deteksi tanpa margin.
+18. **E9 pengenalan**: hanya foto dengan tepat satu kotak manual; pembagian acak per peserta `train_fraction` 0,7 (dibulatkan, minimal 1 latih dan 1 uji) dengan `seed` config, sama untuk semua sumber kotak. Sumber detektor memakai aturan E8 (deteksi ber-IoU tertinggi ≥ 0,5; foto uji tanpa deteksi = gagal; foto latih tanpa deteksi tidak masuk galeri). Ambang `max_distance` 65 dan parameter LBPH sama dengan E8.
+19. **E9 interval**: Wilson 95% untuk proporsi; bootstrap per peserta (kode subfolder) untuk F1, AP, dan akurasi; selisih antar detektor / antar sumber dengan bootstrap berpasangan per peserta (aturan butir 5).
 
 ---
 

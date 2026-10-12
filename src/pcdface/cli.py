@@ -71,6 +71,8 @@ COMMANDS: list[tuple[str, str, Callable[[argparse.ArgumentParser], None], Handle
     ("crop-faces", "Deteksi lalu crop setiap wajah per foto, opsional dikelompokkan per identitas",
      *_tool("crop_faces")),
     ("run", "Jalankan eksperimen e1..e8 atau all", *_tool("pcdface.experiments.runner")),
+    ("eval-folder", "E9: bandingkan detektor, crop manual vs otomatis, dan LBPH pada foto lepas per peserta",
+     *_tool("eval_folder")),
     ("report", "Bangun ulang grafik dan RINGKASAN.md dari hasil tersimpan", *_tool("pcdface.reporting.report")),
     ("demo", "Demo deteksi realtime dari webcam", *_tool("demo_realtime")),
     ("selftest", "Uji metrik dan jalur sintetis tanpa webcam/model", _selftest_args, _selftest),

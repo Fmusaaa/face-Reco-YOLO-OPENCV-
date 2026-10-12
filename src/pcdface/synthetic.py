@@ -24,7 +24,7 @@ import numpy as np
 
 from pcdface.boxes import Box
 from pcdface.config import Config
-from pcdface.dataset.annotations import save_annotations
+from pcdface.dataset.annotations import folder_annotations_path, save_annotations
 from pcdface.dataset.metadata import (
     CaptureSpec,
     MetadataRow,
@@ -375,3 +375,36 @@ def generate_dataset(cfg: Config, data_root: Path, seed: int | None = None) -> P
     save_annotations(paths.annotations, annotations)
     paths.crops.mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def generate_folder(cfg: Config, paths: ProjectPaths, folder: Path, photos_per_subject: int = 8,
+                    size: tuple[int, int] = (960, 720), seed: int | None = None) -> Path:
+    """Foto lepas sintetis per peserta (`folder/S01/001.jpg`, …) untuk E9 / `eval-folder --synthetic`.
+
+    Ukuran foto sengaja bukan 1280×720 (foto lepas berukuran apa saja); jarak acak 60–160 cm.
+    Menulis kotak manual ke `folder_annotations_path` dan `subjects.csv` (semua berizin)."""
+    rng = np.random.default_rng(cfg.seed if seed is None else seed)
+    syn = cfg.synthetic
+    width, height = size
+    subject_ids = [f"S{i:02d}" for i in range(1, syn.subjects + 1)]
+    write_subjects(paths.subjects, [SubjectRow(sid, consent_research=True, consent_publication=False,
+                                               consent_date="2026-10-12", consent_recognition=True)
+                                    for sid in subject_ids])
+    annotations: dict[str, list[Box]] = {}
+    for i, sid in enumerate(subject_ids):
+        (folder / sid).mkdir(parents=True, exist_ok=True)
+        for index in range(1, photos_per_subject + 1):
+            distance = float(rng.uniform(60, 160))
+            face = FaceSpec(
+                center_x=int(width / 2 + rng.integers(-80, 81)),
+                center_y=int(height * 0.45 + rng.integers(-20, 21)),
+                width=face_width_px(distance, syn.focal_px, syn.face_width_cm),
+                tone=SKIN_TONES[i % len(SKIN_TONES)],
+                trait=i,
+            )
+            image, boxes = render_scene(width, height, [face], "normal", rng)
+            key = f"{sid}/{index:03d}.jpg"
+            cv2.imwrite(str(folder / key), image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            annotations[key] = boxes
+    save_annotations(folder_annotations_path(paths, folder), annotations)
+    return folder

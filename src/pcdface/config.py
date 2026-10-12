@@ -180,6 +180,14 @@ class E8Config:
 
 
 @dataclass(frozen=True)
+class E9Config:
+    """Evaluasi foto lepas per peserta (`eval-folder`, PRD §9 E9)."""
+
+    detectors: tuple[str, ...]      # bawaan bila --detectors tidak diberikan
+    train_fraction: float           # proporsi foto per peserta untuk galeri LBPH; sisanya foto uji
+
+
+@dataclass(frozen=True)
 class ExperimentsConfig:
     e1: E1Config
     e2: E2Config
@@ -189,6 +197,7 @@ class ExperimentsConfig:
     e6: E6Config
     e7: E7Config
     e8: E8Config
+    e9: E9Config
 
 
 @dataclass(frozen=True)
@@ -501,7 +510,7 @@ def parse_config(raw: Mapping[str, Any], root: Path = PROJECT_ROOT, source: Path
     def section(key: str) -> dict[str, Any]:
         return r.section(ex, key, "experiments.")
 
-    e1, e2, e3, e4, e5, e6, e7, e8 = (section(k) for k in ("e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"))
+    e1, e2, e3, e4, e5, e6, e7, e8, e9 = (section(k) for k in ("e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9"))
     experiments = ExperimentsConfig(
         e1=E1Config(
             detectors=r.get(e1, "detectors", "experiments.e1.", names),
@@ -535,10 +544,15 @@ def parse_config(raw: Mapping[str, Any], root: Path = PROJECT_ROOT, source: Path
             blur_angle_deg=r.get(e7, "blur_angle_deg", "experiments.e7.", _float),
         ),
         e8=E8Config(detector=r.get(e8, "detector", "experiments.e8.", _str)),
+        e9=E9Config(
+            detectors=r.get(e9, "detectors", "experiments.e9.", names),
+            train_fraction=r.get(e9, "train_fraction", "experiments.e9.", _float,
+                                 lambda v: 0.0 < v < 1.0, "di antara 0 dan 1"),
+        ),
     )
 
     for key, spec in (("e1", experiments.e1), ("e2", experiments.e2), ("e3", experiments.e3), ("e4", experiments.e4),
-                      ("e6", experiments.e6), ("e7", experiments.e7)):
+                      ("e6", experiments.e6), ("e7", experiments.e7), ("e9", experiments.e9)):
 
 
         for name in spec.detectors or ():

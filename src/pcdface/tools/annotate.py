@@ -5,6 +5,7 @@ batas bawah ujung dagu, kiri-kanan tepi pipi, tanpa telinga dan leher.
 
     python -m pcdface annotate                 # mulai dari citra pertama yang belum dianotasi
     python -m pcdface annotate --set multi     # hanya satu set
+    python -m pcdface annotate --folder data/DATASET-MUSANG-PCD   # foto lepas per peserta (E9)
 
 Mouse : seret kiri = kotak baru, klik kanan = hapus kotak di bawah kursor
 Tombol: n / → simpan & berikutnya     p / ← simpan & sebelumnya
@@ -16,6 +17,11 @@ Tombol: n / → simpan & berikutnya     p / ← simpan & sebelumnya
 Pindah citra menyimpan kotak citra itu — termasuk daftar kosong, yang berarti
 "sudah diperiksa, tidak ada wajah" (untuk set kosong). `validate` menangkap
 jumlah kotak yang tidak sama dengan expected_faces.
+
+Mode `--folder` (E9): foto lepas berukuran apa saja di `<folder>/S01/*.jpg`, … tanpa
+metadata. Kotak disimpan ke `data/annotations/folder_<nama folder>.json` dengan kunci
+path relatif terhadap folder (mis. `S01/001.jpg`). Jendela diperkecil otomatis supaya
+foto ponsel muat di layar; koordinat kotak tetap dalam piksel foto asli.
 """
 
 from __future__ import annotations
@@ -23,20 +29,22 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from pcdface.boxes import Box, sort_left_to_right
 from pcdface.config import Config
-from pcdface.dataset.annotations import load_annotations, save_annotations
-from pcdface.dataset.metadata import MetadataRow, read_metadata
+from pcdface.dataset.annotations import folder_annotations_path, list_folder_images, load_annotations, save_annotations
+from pcdface.dataset.metadata import read_metadata
 from pcdface.paths import ProjectPaths
 from pcdface.tools.keys import lower_key
 
 WINDOW = "Anotasi - pcdface"
 ZOOM_LEVELS = (1, 2, 4)
 MIN_DRAG_PX = 3
+FIT_WINDOW = (1400, 860)   # batas jendela mode --folder sebelum dikali --display-scale
 # Kode panah dari waitKeyEx: 2/3 (beberapa backend), macOS 63234/63235, Linux 65361/65363,
 # Windows 2424832/2555904. Kode 81/83 sengaja tidak dipakai — sama dengan 'Q'/'S' saat Caps Lock.
 KEY_LEFT = {2, 63234, 65361, 2424832}
@@ -81,7 +89,8 @@ class Viewport:
         view_w, view_h = int(self.width / self.zoom), int(self.height / self.zoom)
         crop = image[int(y0):int(y0) + view_h, int(x0):int(x0) + view_w]
         size = (int(self.width * self.display_scale), int(self.height * self.display_scale))
-        interpolation = cv2.INTER_NEAREST if self.zoom > 1 else cv2.INTER_AREA
+        # piksel tajam hanya saat benar-benar diperbesar; foto ponsel yang di-zoom masih diperkecil
+        interpolation = cv2.INTER_NEAREST if self.zoom * self.display_scale > 1 else cv2.INTER_AREA
         return cv2.resize(crop, size, interpolation=interpolation)
 
 
@@ -114,20 +123,36 @@ class AnnotationState:
         return True
 
 
-def _render(image: np.ndarray, row: MetadataRow, state: AnnotationState, view: Viewport,
-            index: int, total: int, done: int) -> np.ndarray:
-    canvas = image.copy()
-    for number, (x, y, w, h) in enumerate(sort_left_to_right(state.boxes), start=1):
-        cv2.rectangle(canvas, (x, y), (x + w, y + h), (0, 255, 0), 1 if view.zoom > 1 else 2)
-        cv2.putText(canvas, str(number), (x, max(y - 5, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    if state.drag_start is not None:
-        cv2.rectangle(canvas, state.drag_start, state.cursor, (0, 200, 255), 1)
-    shown = view.render(canvas)
+@dataclass(frozen=True)
+class Item:
+    """Satu citra yang dianotasi: kunci anotasi, berkas, dan jumlah wajah yang diharapkan (None = tidak diketahui)."""
 
-    mismatch = len(state.boxes) != row.expected_faces
+    key: str
+    path: Path
+    expected: int | None
+
+
+def fit_scale(width: int, height: int, limit: tuple[int, int] = FIT_WINDOW) -> float:
+    """Skala tampilan supaya citra muat di jendela; tidak pernah memperbesar."""
+    return min(1.0, limit[0] / width, limit[1] / height)
+
+
+def _render(base: np.ndarray, item: Item, state: AnnotationState, view: Viewport,
+            index: int, total: int, done: int) -> np.ndarray:
+    """Gambar kotak di atas tampilan yang sudah diperkecil (koordinat jendela), bukan di citra asli —
+    foto ponsel 20 MP terlalu berat untuk disalin setiap frame, dan garisnya tetap terlihat tebal."""
+    shown = base.copy()
+    for number, (x, y, w, h) in enumerate(sort_left_to_right(state.boxes), start=1):
+        p1, p2 = view.to_window(x, y), view.to_window(x + w, y + h)
+        cv2.rectangle(shown, p1, p2, (0, 255, 0), 2)
+        cv2.putText(shown, str(number), (p1[0], max(p1[1] - 5, 44)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    if state.drag_start is not None:
+        cv2.rectangle(shown, view.to_window(*state.drag_start), view.to_window(*state.cursor), (0, 200, 255), 1)
+
+    mismatch = item.expected is not None and len(state.boxes) != item.expected
     color = (60, 60, 255) if mismatch else (120, 255, 120)
-    header = (f"[{index + 1}/{total}] {row.file} | kotak {len(state.boxes)}/{row.expected_faces} "
-              f"| zoom {view.zoom}x | selesai {done}/{total}")
+    count = f"{len(state.boxes)}/{item.expected}" if item.expected is not None else str(len(state.boxes))
+    header = f"[{index + 1}/{total}] {item.key} | kotak {count} | zoom {view.zoom}x | selesai {done}/{total}"
     cv2.rectangle(shown, (0, 0), (shown.shape[1], 30), (20, 20, 20), -1)
     cv2.putText(shown, header, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
     footer = "rambut->dagu, pipi->pipi, tanpa telinga | seret=kotak kanan=hapus n/p g z u c s q"
@@ -136,66 +161,81 @@ def _render(image: np.ndarray, row: MetadataRow, state: AnnotationState, view: V
     return shown
 
 
+def dataset_items(paths: ProjectPaths, only_set: str | None) -> list[Item]:
+    rows = sorted(read_metadata(paths.metadata), key=lambda r: r.file)
+    if only_set:
+        rows = [r for r in rows if r.set == only_set]
+    return [Item(r.file, paths.raw / r.file, r.expected_faces) for r in rows if (paths.raw / r.file).exists()]
+
+
+def folder_items(folder: Path) -> list[Item]:
+    return [Item(key, folder / key, None) for key in list_folder_images(folder)]
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--set", default=None, help="Hanya satu set (jarak/cahaya/multi/kosong/pose/ekspresi/oklusi)")
-
-
+    parser.add_argument("--folder", default=None,
+                        help="Anotasi foto lepas <folder>/S01/*.jpg (E9) alih-alih data/raw + metadata")
     parser.add_argument("--start", type=int, default=None, help="Mulai dari citra ke-N (1 = pertama)")
     parser.add_argument("--display-scale", type=float, default=1.0,
-                        help="Skala jendela bila layar kecil, mis. 0.8")
+                        help="Skala jendela bila layar kecil, mis. 0.8 (mode --folder: dikalikan skala muat-layar)")
 
 
 def run(args: argparse.Namespace, cfg: Config, paths: ProjectPaths | None = None) -> int:
     paths = paths or cfg.paths
-    rows = sorted(read_metadata(paths.metadata), key=lambda r: r.file)
-    if args.set:
-        rows = [r for r in rows if r.set == args.set]
-    rows = [r for r in rows if (paths.raw / r.file).exists()]
-    if not rows:
+    folder = Path(args.folder) if getattr(args, "folder", None) else None
+    if folder is not None:
+        if not folder.is_dir():
+            print(f"[GAGAL] folder tidak ada: {folder}", file=sys.stderr)
+            return 2
+        items, store = folder_items(folder), folder_annotations_path(paths, folder)
+    else:
+        items, store = dataset_items(paths, args.set), paths.annotations
+    if not items:
         print("Tidak ada foto untuk dianotasi. Rekam dulu: python -m pcdface capture ...", file=sys.stderr)
         return 1
 
-    annotations = load_annotations(paths.annotations)
-    pending = [i for i, r in enumerate(rows) if r.file not in annotations]
+    annotations = load_annotations(store)
+    pending = [i for i, item in enumerate(items) if item.key not in annotations]
     if args.start is not None:
-        index = min(max(args.start - 1, 0), len(rows) - 1)
+        index = min(max(args.start - 1, 0), len(items) - 1)
     else:
         index = pending[0] if pending else 0
 
     state = AnnotationState()
     view = Viewport(cfg.capture.width, cfg.capture.height, display_scale=args.display_scale)
 
-    def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
-        point = view.to_image(x, y)
-        state.cursor = point
-        if event == cv2.EVENT_LBUTTONDOWN:
-            state.drag_start = point
-        elif event == cv2.EVENT_LBUTTONUP:
-            state.finish_drag(point)
-        elif event == cv2.EVENT_RBUTTONDOWN:
-            state.delete_at(point)
-
     cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(WINDOW, on_mouse)
 
     def commit() -> None:
-        annotations[rows[index].file] = list(state.boxes)
+        annotations[items[index].key] = list(state.boxes)
 
     try:
-        while 0 <= index < len(rows):
-            row = rows[index]
-            image = cv2.imread(str(paths.raw / row.file))
-            if image is None or image.shape[:2] != (view.height, view.width):
-                print(f"[LEWAT] {row.file}: tidak terbaca atau bukan {view.width}×{view.height}")
+        while 0 <= index < len(items):
+            item = items[index]
+            image = cv2.imread(str(item.path))
+            if image is None:
+                print(f"[LEWAT] {item.key}: tidak terbaca")
                 index += 1
                 continue
-            state.boxes = list(annotations.get(row.file, []))
+            height, width = image.shape[:2]
+            if folder is None and (width, height) != (view.width, view.height):
+                print(f"[LEWAT] {item.key}: bukan {view.width}×{view.height}")
+                index += 1
+                continue
+            scale = args.display_scale * (fit_scale(width, height) if folder is not None else 1.0)
+            view = Viewport(width, height, display_scale=scale, center=(width / 2, height / 2))
+            state.boxes = list(annotations.get(item.key, []))
             state.drag_start = None
-            view.zoom = 1
+            cached: tuple[tuple, np.ndarray] | None = None
             move = 0
             while move == 0:
-                done = sum(1 for r in rows if r.file in annotations)
-                cv2.imshow(WINDOW, _render(image, row, state, view, index, len(rows), done))
+                done = sum(1 for it in items if it.key in annotations)
+                view_key = (view.zoom, view.origin)
+                if cached is None or cached[0] != view_key:
+                    cached = (view_key, view.render(image))
+                cv2.imshow(WINDOW, _render(cached[1], item, state, view, index, len(items), done))
                 key = cv2.waitKeyEx(20)
                 if key == -1:
                     continue
@@ -208,7 +248,7 @@ def run(args: argparse.Namespace, cfg: Config, paths: ProjectPaths | None = None
                     commit(); move = -1
                 elif char == ord("g"):
                     commit()
-                    remaining = [i for i, r in enumerate(rows) if r.file not in annotations]
+                    remaining = [i for i, it in enumerate(items) if it.key not in annotations]
                     if remaining:
                         move = remaining[0] - index or 0
                         if move == 0:
@@ -222,19 +262,19 @@ def run(args: argparse.Namespace, cfg: Config, paths: ProjectPaths | None = None
                 elif char == ord("c"):
                     state.boxes.clear()
                 elif char == ord("s"):
-                    commit(); save_annotations(paths.annotations, annotations)
-                    print(f"  tersimpan ke {paths.annotations}")
+                    commit(); save_annotations(store, annotations)
+                    print(f"  tersimpan ke {store}")
                 elif char in (ord("q"), 27):
-                    commit(); save_annotations(paths.annotations, annotations)
-                    print(f"\nTersimpan: {len(annotations)} citra -> {paths.annotations}")
+                    commit(); save_annotations(store, annotations)
+                    print(f"\nTersimpan: {len(annotations)} citra -> {store}")
                     return 0
-            save_annotations(paths.annotations, annotations)
+            save_annotations(store, annotations)
             index = max(index + move, 0)
     finally:
         cv2.destroyAllWindows()
 
-    save_annotations(paths.annotations, annotations)
+    save_annotations(store, annotations)
     total = sum(len(v) for v in annotations.values())
-    print(f"\nSelesai: {len(annotations)} citra, {total} kotak -> {paths.annotations}")
-    print("Berikutnya: python -m pcdface validate")
+    print(f"\nSelesai: {len(annotations)} citra, {total} kotak -> {store}")
+    print("Berikutnya: python -m pcdface " + (f"eval-folder --input {folder}" if folder is not None else "validate"))
     return 0

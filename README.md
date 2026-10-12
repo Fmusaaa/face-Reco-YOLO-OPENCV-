@@ -94,6 +94,21 @@ Setiap wajah menjadi `<nama foto>_f<N>.jpg` (N urut kiri → kanan) dan dicatat 
 (kotak, skor, identitas, jarak LBPH). Gaya repo referensi juga didukung: `python -m pcdface enroll
 --folder faces/` dengan subfolder `faces/S01/`, `faces/S02/` (nama folder harus kode peserta, bukan nama).
 
+### Foto lepas per peserta: OpenCV vs YOLO, crop manual vs otomatis (E9)
+
+Untuk foto di luar protokol `capture` (mis. foto ponsel dari Drive) di `data/DATASET-MUSANG-PCD/S01/*.jpg`, …:
+
+```bash
+python -m pcdface annotate --folder data/DATASET-MUSANG-PCD                      # 1. crop manual (ground truth)
+python -m pcdface eval-folder --input data/DATASET-MUSANG-PCD --detectors haar     # 2. model OpenCV
+python -m pcdface eval-folder --input data/DATASET-MUSANG-PCD --detectors yolo_n   # 3. model YOLO → tabel pembanding
+```
+
+Hasil di `results/e9/`: `RINGKASAN_E9.md`, akurasi deteksi (precision/recall/F1/AP + interval),
+crop otomatis vs crop manual (IoU, geser, rasio ukuran), akurasi LBPH dengan crop manual vs crop otomatis
+(pembagian 70/30 per peserta), grafik 16–19, dan `banding_crop/` (crop manual | Haar | YOLO berdampingan —
+berisi wajah, internal saja).
+
 Keluaran per eksperimen di `results/<eN>/`: tabel `.csv` + `.md` (interval Wilson / bootstrap),
 grafik `.png` 300 dpi + `.pdf`, `config_snapshot.yaml` (config + versi perangkat lunak), `deteksi.jsonl`.
 
@@ -106,7 +121,9 @@ Uji jalur tanpa data asli: `python -m pcdface run all --synthetic && python -m p
 - `data/` dan `results/` tidak pernah di-commit (lihat `.gitignore`).
 - Peserta menarik diri: `python -m pcdface forget S03` — menghapus foto, foto multi-wajah yang
   memuatnya, crop, metadata, anotasi, barisnya di `subjects.csv`, dan model LBPH bila memuatnya.
-  Lalu jalankan ulang `enroll`, `run all`, dan `report`.
+  Lalu jalankan ulang `enroll`, `run all`, dan `report`. Foto lepas E9 tidak ditangani `forget`: hapus
+  subfolder `data/DATASET-MUSANG-PCD/S03/`, `results/e9_deteksi/`, dan `results/e9/` secara manual, lalu
+  jalankan ulang `eval-folder`.
 - Model LBPH (`data/recognition/`) adalah templat biometrik: tidak pernah di-commit atau dibagikan.
   Hanya peserta dengan `consent_recognition = ya` yang masuk; `validate` memberi GALAT bila model memuat
   peserta tanpa izin. Wajah yang tidak cocok selalu berlabel `unknown` — sistem tidak pernah menebak nama.

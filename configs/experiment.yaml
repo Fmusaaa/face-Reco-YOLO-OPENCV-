@@ -138,6 +138,9 @@ experiments:
     blur_angle_deg: 0                # 0 = horizontal (kepala/badan bergerak ke samping)
   e8:                                # pengenalan identitas LBPH (PRD v4 §9 E8) — hanya peserta consent_recognition
     detector: yolo_n                 # jalur ujung-ke-ujung: crop dari deteksi detektor ini
+  e9:                                # foto lepas per peserta (eval-folder, PRD §9 E9) — ditetapkan 2026-10-12, sebelum hasil
+    detectors: [haar, yolo_n]        # OpenCV klasik vs YOLO; --detectors menimpa (mis. satu per satu)
+    train_fraction: 0.7              # 70% foto tiap peserta → galeri LBPH, 30% → foto uji (seed di atas)
 
 recognition:                         # LBPH (Ahonen dkk., 2006) seperti repo referensi MariyaSha — PRD §5.4
   face_size: [200, 200]              # crop abu-abu diubah ke ukuran ini sebelum LBPH
