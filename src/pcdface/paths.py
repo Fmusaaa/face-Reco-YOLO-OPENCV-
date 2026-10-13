@@ -17,7 +17,7 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "experiment.yaml"
 
 _REQUIRED_KEYS = ("raw", "metadata", "subjects", "annotations", "crops", "models", "results")
 # Kunci opsional dan nilai bawaannya (relatif terhadap root) — config lama tetap terbaca
-_OPTIONAL_KEYS = {"recognition": "data/recognition"}
+_OPTIONAL_KEYS = {"recognition": "data/recognition", "manual_crops": "data/crop_manual"}
 
 
 def resolve(path: str | Path, root: Path = PROJECT_ROOT) -> Path:
@@ -39,6 +39,8 @@ class ProjectPaths:
     results: Path
     # model LBPH terlatih + daftar label. Berisi templat biometrik — data pribadi, di-gitignore (PRD §11)
     recognition: Path = PROJECT_ROOT / "data" / "recognition"
+    # crop wajah yang dipotong tangan oleh peserta (E9): <folder>/S01/001.jpg — data wajah, di-gitignore
+    manual_crops: Path = PROJECT_ROOT / "data" / "crop_manual"
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, str], root: Path = PROJECT_ROOT) -> "ProjectPaths":
@@ -64,4 +66,5 @@ class ProjectPaths:
             models=self.models,
             results=self.results / "synthetic",
             recognition=data_root / "recognition",
+            manual_crops=data_root / "crop_manual",
         )

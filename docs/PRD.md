@@ -489,7 +489,8 @@ Ditambahkan 12 Oktober 2026, **sebelum** anotasi dan deteksi apa pun pada foto i
 
 | Langkah | Perintah | Keluaran |
 |---|---|---|
-| Crop manual (ground truth, aturan kotak §7) | `annotate --folder data/DATASET-MUSANG-PCD` | `data/annotations/folder_DATASET-MUSANG-PCD.json` |
+| Crop manual (ground truth, aturan kotak §7) — **cara utama:** peserta memotong wajahnya sendiri dengan aplikasi apa saja dan menyimpan berkasnya | `data/crop_manual/S01/001.jpg` (nama = foto asal; wajah kedua `001_2.jpg`), lalu `import-crops --input data/DATASET-MUSANG-PCD` | `data/annotations/folder_DATASET-MUSANG-PCD.json` + `results/e9_impor_crop.csv` |
+| Crop manual — cara alternatif: kotak digambar di alat anotasi | `annotate --folder data/DATASET-MUSANG-PCD` | berkas anotasi yang sama |
 | Model 1 — OpenCV | `eval-folder --input … --detectors haar` | deteksi tersimpan di `results/e9_deteksi/` |
 | Model 2 — YOLO | `eval-folder --input … --detectors yolo_n` | perbandingan semua detektor tersimpan di `results/e9/` |
 
@@ -670,7 +671,8 @@ pcd-face-detection/
 | `capture --set oklusi --subject S03 --occlusion semua` | Semua penutup wajah berurutan di jarak acuan |
 | `annotate` / `crop` / `validate` | Anotasi, ekspor crop, periksa konsistensi data |
 | `run e1` … `run e8`, `run all` | Eksperimen; `--synthetic` memakai citra sintetis + FakeDetector |
-| `annotate --folder <folder>` | Kotak manual untuk foto lepas `<folder>/S01/*.jpg` berukuran apa saja (E9) |
+| `import-crops --input <folder> [--crops data/crop_manual]` | Impor crop wajah yang dipotong tangan: cari letaknya di foto asli → kotak manual E9 |
+| `annotate --folder <folder>` | Kotak manual untuk foto lepas `<folder>/S01/*.jpg` berukuran apa saja (E9, alternatif crop tangan) |
 | `eval-folder --input <folder> [--detectors haar] [--compare-only]` | E9: deteksi per model (bisa satu per satu), lalu perbandingan semua model yang sudah dijalankan |
 | `report` | Bangun ulang tabel dan grafik dari hasil tersimpan |
 | `demo --detector mp_short` | Demo realtime; tombol untuk ganti detektor saat berjalan, `r` = pengenalan LBPH (v4) |
@@ -706,6 +708,7 @@ Butir 16–19 ditetapkan 12 Oktober 2026 (E9), sebelum foto `DATASET-MUSANG-PCD`
 17. **E9 crop manual vs otomatis**: pasangan = pencocokan greedy satu-satu dengan IoU > 0 (wajah tanpa pasangan = tidak terdeteksi, IoU 0). "Crop cukup sama" = IoU ≥ `iou_primary` (0,5). Crop otomatis memakai kotak deteksi tanpa margin.
 18. **E9 pengenalan**: hanya foto dengan tepat satu kotak manual; pembagian acak per peserta `train_fraction` 0,7 (dibulatkan, minimal 1 latih dan 1 uji) dengan `seed` config, sama untuk semua sumber kotak. Sumber detektor memakai aturan E8 (deteksi ber-IoU tertinggi ≥ 0,5; foto uji tanpa deteksi = gagal; foto latih tanpa deteksi tidak masuk galeri). Ambang `max_distance` 65 dan parameter LBPH sama dengan E8.
 19. **E9 interval**: Wilson 95% untuk proporsi; bootstrap per peserta (kode subfolder) untuk F1, AP, dan akurasi; selisih antar detektor / antar sumber dengan bootstrap berpasangan per peserta (aturan butir 5).
+20. **E9 crop tangan** (13 Oktober 2026, ketentuan dosen: crop dilakukan manual oleh peserta dan menjadi data tersendiri): letak setiap berkas crop di foto asalnya dicari dengan `cv2.matchTemplate` (TM_CCOEFF_NORMED, abu-abu) — pertama pada skala 1, lalu pindaian skala 0,25–4×, lalu rotasi 90°/180°/270° bila skor < 0,9 — dan diperhalus di resolusi asli. Crop diterima bila skor ≥ `manual_crop_min_score` (0,8); foto yang salah satu crop-nya ditolak tidak dievaluasi sampai crop diperbaiki. Kotak hasil pencarian menjadi ground truth E9; berkas crop tangan tetap disimpan sebagai data (`data/crop_manual/`, di-gitignore).
 
 ---
 

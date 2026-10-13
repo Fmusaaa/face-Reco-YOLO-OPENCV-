@@ -185,6 +185,7 @@ class E9Config:
 
     detectors: tuple[str, ...]      # bawaan bila --detectors tidak diberikan
     train_fraction: float           # proporsi foto per peserta untuk galeri LBPH; sisanya foto uji
+    manual_crop_min_score: float    # import-crops: skor template matching minimum agar crop tangan diterima
 
 
 @dataclass(frozen=True)
@@ -548,6 +549,8 @@ def parse_config(raw: Mapping[str, Any], root: Path = PROJECT_ROOT, source: Path
             detectors=r.get(e9, "detectors", "experiments.e9.", names),
             train_fraction=r.get(e9, "train_fraction", "experiments.e9.", _float,
                                  lambda v: 0.0 < v < 1.0, "di antara 0 dan 1"),
+            manual_crop_min_score=r.get(e9, "manual_crop_min_score", "experiments.e9.", _float,
+                                        lambda v: 0.0 < v <= 1.0, "di antara 0 dan 1"),
         ),
     )
 

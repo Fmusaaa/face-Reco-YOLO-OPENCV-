@@ -36,7 +36,8 @@ python -m pcdface export-yolo       # yolov8m-face.pt → .onnx di venv terpisah
 python -m pcdface enroll            # latih LBPH dari foto kondisi acuan peserta berizin → data/recognition/
 python -m pcdface crop-faces        # crop setiap wajah per foto (yolo_n); --recognize = kelompokkan per S01/S02/unknown
 python -m pcdface run all           # seluruh eksperimen (E1–E8)
-python -m pcdface annotate --folder data/DATASET-MUSANG-PCD          # crop manual foto lepas per peserta
+python -m pcdface import-crops --input data/DATASET-MUSANG-PCD      # crop tangan data/crop_manual/S01/001.jpg → kotak manual E9
+python -m pcdface annotate --folder data/DATASET-MUSANG-PCD          # alternatif: gambar kotak manual di alat anotasi
 python -m pcdface eval-folder --input data/DATASET-MUSANG-PCD --detectors haar   # E9, satu model per run
 python -m pcdface run all --synthetic   # uji jalur eksperimen dengan citra sintetis + FakeDetector
 python -m pcdface report            # bangun ulang tabel dan grafik
@@ -58,7 +59,7 @@ src/pcdface/
                            e9_folder (foto lepas: deteksi vs crop manual, crop manual vs otomatis, LBPH 70/30)
   reporting/               tables (CSV+MD), plots (19 grafik §10), report (RINGKASAN.md, contoh gambar terburam)
   tools/                   download_models, export_yolo, capture, annotate (+ --folder), crop, crop_faces, enroll,
-                           validate, demo_realtime, forget, eval_folder
+                           validate, demo_realtime, forget, eval_folder, import_crops
 ```
 
 ## Konvensi

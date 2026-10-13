@@ -99,7 +99,10 @@ Setiap wajah menjadi `<nama foto>_f<N>.jpg` (N urut kiri → kanan) dan dicatat 
 Untuk foto di luar protokol `capture` (mis. foto ponsel dari Drive) di `data/DATASET-MUSANG-PCD/S01/*.jpg`, …:
 
 ```bash
-python -m pcdface annotate --folder data/DATASET-MUSANG-PCD                      # 1. crop manual (ground truth)
+# 1. crop manual: potong wajah sendiri di aplikasi apa saja, simpan ke data/crop_manual/S01/001.jpg
+#    (nama sama dengan foto asal; wajah kedua di foto yang sama: 001_2.jpg), lalu:
+python -m pcdface import-crops --input data/DATASET-MUSANG-PCD
+#    (alternatif tanpa aplikasi lain: python -m pcdface annotate --folder data/DATASET-MUSANG-PCD)
 python -m pcdface eval-folder --input data/DATASET-MUSANG-PCD --detectors haar     # 2. model OpenCV
 python -m pcdface eval-folder --input data/DATASET-MUSANG-PCD --detectors yolo_n   # 3. model YOLO → tabel pembanding
 ```

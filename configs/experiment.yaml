@@ -13,6 +13,7 @@ paths:                               # relatif terhadap akar proyek
   models: models
   results: results
   recognition: data/recognition      # model LBPH terlatih — templat biometrik, tidak pernah di-commit
+  manual_crops: data/crop_manual     # crop wajah yang dipotong tangan (E9, import-crops) — data wajah
 
 capture:
   width: 1280
@@ -141,6 +142,7 @@ experiments:
   e9:                                # foto lepas per peserta (eval-folder, PRD §9 E9) — ditetapkan 2026-10-12, sebelum hasil
     detectors: [haar, yolo_n]        # OpenCV klasik vs YOLO; --detectors menimpa (mis. satu per satu)
     train_fraction: 0.7              # 70% foto tiap peserta → galeri LBPH, 30% → foto uji (seed di atas)
+    manual_crop_min_score: 0.8       # import-crops: kemiripan template minimum (TM_CCOEFF_NORMED) — 2026-10-13, sebelum hasil
 
 recognition:                         # LBPH (Ahonen dkk., 2006) seperti repo referensi MariyaSha — PRD §5.4
   face_size: [200, 200]              # crop abu-abu diubah ke ukuran ini sebelum LBPH

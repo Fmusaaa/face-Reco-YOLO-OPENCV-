@@ -121,3 +121,49 @@ def test_eval_folder_cli_arguments(cfg, tmp_path):
     assert eval_folder.run(args(detectors="tidak_ada"), cfg) == 2
     assert eval_folder.run(args(), cfg) == 2                                     # --input wajib
     assert eval_folder.run(args(input=str(tmp_path / "tidak_ada")), cfg) == 2
+
+
+def test_import_hand_crops_locates_boxes_and_feeds_eval(folder_setup, tmp_path):
+    import cv2
+    import numpy as np
+
+    from pcdface.evaluation.matching import iou
+    from pcdface.tools import import_crops
+
+    cfg, paths, folder = folder_setup
+    store = folder_annotations_path(paths, folder)
+    truth = load_annotations(store)
+    store.unlink()                                             # hanya crop tangan yang jadi kotak manual
+    crops = tmp_path / "crop_manual"
+    for key, boxes in truth.items():
+        image = cv2.imread(str(folder / key))
+        x, y, w, h = boxes[0]
+        crop = image[max(y - 8, 0):y + h + 8, max(x - 4, 0):x + w + 4]   # dipotong tangan: sedikit lebih longgar
+        if key.endswith("002.jpg"):
+            crop = cv2.resize(crop, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)   # disimpan diperkecil
+        if key.endswith("003.jpg"):
+            crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)                              # tersimpan diputar
+        (crops / key).parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(crops / key), crop)
+    noise = np.random.default_rng(1).integers(0, 255, (120, 90, 3), dtype=np.uint8)
+    cv2.imwrite(str(crops / "S02" / "004_2.png"), noise)                                   # bukan potongan foto itu
+    cv2.imwrite(str(crops / "S03" / "999.jpg"), noise)                                     # tidak ada foto asal
+
+    report = import_crops.import_crops(cfg, paths, folder, crops)
+    assert report.rejected == ["S02/004_2.png"] and report.orphans == ["S03/999.jpg"]
+    imported = load_annotations(store)
+    assert "S02/004.jpg" not in imported                      # foto dengan crop gagal tidak dievaluasi
+    assert len(imported) == len(truth) - 1
+    for key, boxes in imported.items():
+        x, y, w, h = truth[key][0]
+        expected = (max(x - 4, 0), max(y - 8, 0), w + 8, h + 16)
+        assert len(boxes) == 1 and iou(boxes[0], expected) > 0.9, key
+    assert (paths.results / import_crops.REPORT).exists()
+
+    out = eval_folder.evaluate_folder(cfg, paths, folder, ["haar"], synthetic=True, save_crops=False, plots=False)
+    assert pd.read_csv(out / "e9_deteksi.csv")["wajah"].iloc[0] == len(truth) - 1
+
+    (crops / "Budi").mkdir()
+    (crops / "Budi" / "001.jpg").write_bytes((crops / "S01" / "001.jpg").read_bytes())
+    with pytest.raises(ValueError, match="kode peserta"):
+        import_crops.import_crops(cfg, paths, folder, crops)
