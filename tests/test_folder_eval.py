@@ -123,7 +123,7 @@ def test_eval_folder_cli_arguments(cfg, tmp_path):
     assert eval_folder.run(args(input=str(tmp_path / "tidak_ada")), cfg) == 2
 
 
-def test_import_hand_crops_locates_boxes_and_feeds_eval(folder_setup, tmp_path):
+def test_import_hand_crops_matches_by_content(folder_setup, tmp_path):
     import cv2
     import numpy as np
 
@@ -134,26 +134,29 @@ def test_import_hand_crops_locates_boxes_and_feeds_eval(folder_setup, tmp_path):
     store = folder_annotations_path(paths, folder)
     truth = load_annotations(store)
     store.unlink()                                             # hanya crop tangan yang jadi kotak manual
-    crops = tmp_path / "crop_manual"
-    for key, boxes in truth.items():
+    crops = tmp_path / "crop-manual"
+    keys = sorted(truth)
+    for number, key in enumerate(keys, start=1):
         image = cv2.imread(str(folder / key))
-        x, y, w, h = boxes[0]
+        x, y, w, h = truth[key][0]
         crop = image[max(y - 8, 0):y + h + 8, max(x - 4, 0):x + w + 4]   # dipotong tangan: sedikit lebih longgar
-        if key.endswith("002.jpg"):
+        if number % 5 == 2:
             crop = cv2.resize(crop, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)   # disimpan diperkecil
-        if key.endswith("003.jpg"):
+        if number % 5 == 3:
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)                              # tersimpan diputar
-        (crops / key).parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(crops / key), crop)
+        # nama folder dan nomor berkas sengaja tidak sama dengan foto asal
+        target = crops / key.split("/")[0] / f" {len(keys) - number + 1:03d}.JPG"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), crop)
+    first = cv2.imread(str(crops / "S01" / f" {len(keys):03d}.JPG"))
+    cv2.imwrite(str(crops / "S01" / "duplikat.jpg"), first)                              # wajah yang sama dua kali
     noise = np.random.default_rng(1).integers(0, 255, (120, 90, 3), dtype=np.uint8)
-    cv2.imwrite(str(crops / "S02" / "004_2.png"), noise)                                   # bukan potongan foto itu
-    cv2.imwrite(str(crops / "S03" / "999.jpg"), noise)                                     # tidak ada foto asal
+    cv2.imwrite(str(crops / "S02" / "asing.png"), noise)                                 # bukan dari foto dataset
 
     report = import_crops.import_crops(cfg, paths, folder, crops)
-    assert report.rejected == ["S02/004_2.png"] and report.orphans == ["S03/999.jpg"]
+    assert report.unmatched == ["S02/asing.png"] and report.duplicates == ["S01/duplikat.jpg"]
     imported = load_annotations(store)
-    assert "S02/004.jpg" not in imported                      # foto dengan crop gagal tidak dievaluasi
-    assert len(imported) == len(truth) - 1
+    assert set(imported) == set(truth) and report.accepted_photos == len(truth)
     for key, boxes in imported.items():
         x, y, w, h = truth[key][0]
         expected = (max(x - 4, 0), max(y - 8, 0), w + 8, h + 16)
@@ -161,9 +164,15 @@ def test_import_hand_crops_locates_boxes_and_feeds_eval(folder_setup, tmp_path):
     assert (paths.results / import_crops.REPORT).exists()
 
     out = eval_folder.evaluate_folder(cfg, paths, folder, ["haar"], synthetic=True, save_crops=False, plots=False)
-    assert pd.read_csv(out / "e9_deteksi.csv")["wajah"].iloc[0] == len(truth) - 1
+    assert pd.read_csv(out / "e9_deteksi.csv")["wajah"].iloc[0] == len(truth)
 
-    (crops / "Budi").mkdir()
-    (crops / "Budi" / "001.jpg").write_bytes((crops / "S01" / "001.jpg").read_bytes())
-    with pytest.raises(ValueError, match="kode peserta"):
-        import_crops.import_crops(cfg, paths, folder, crops)
+
+def test_default_crops_dir_accepts_hyphen(small_cfg, tmp_path):
+    from pcdface.tools.import_crops import default_crops_dir
+
+    paths = small_cfg.paths.with_data_root(tmp_path / "data")
+    assert default_crops_dir(paths) == paths.manual_crops
+    (tmp_path / "data" / "crop-manual").mkdir(parents=True)
+    assert default_crops_dir(paths).name == "crop-manual"
+    paths.manual_crops.mkdir()
+    assert default_crops_dir(paths) == paths.manual_crops
