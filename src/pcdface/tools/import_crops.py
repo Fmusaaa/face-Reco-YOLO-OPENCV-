@@ -193,6 +193,7 @@ class ImportReport:
     unmatched: list[str]
     duplicates: list[str]
     store: Path
+    dropped: list[str]          # foto yang punya kotak di berkas lama tetapi tidak dari impor ini
 
 
 def import_crops(cfg: Config, paths: ProjectPaths, folder: Path, crops_dir: Path,
@@ -255,12 +256,13 @@ def import_crops(cfg: Config, paths: ProjectPaths, folder: Path, crops_dir: Path
                 unmatched.append(name)
         rows[name] = row
 
+    # Berkas anotasi folder ditulis ulang dari nol: kotak dari impor sebelumnya (mis. pasangan yang kini
+    # ditolak) tidak boleh tertinggal sebagai ground truth.
     store = folder_annotations_path(paths, folder)
-    annotations = load_annotations(store)
-    for key, boxes in taken.items():
-        if boxes:
-            annotations[key] = list(boxes)
-    found = {key for key, boxes in taken.items() if boxes}
+    previous = load_annotations(store)
+    annotations = {key: list(boxes) for key, boxes in taken.items() if boxes}
+    dropped = sorted(set(previous) - set(annotations))
+    found = set(annotations)
     rows = [rows[name] for name in sorted(rows)]
     save_annotations(store, annotations)
     paths.results.mkdir(parents=True, exist_ok=True)
@@ -268,7 +270,7 @@ def import_crops(cfg: Config, paths: ProjectPaths, folder: Path, crops_dir: Path
         writer = csv.DictWriter(handle, fieldnames=COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    return ImportReport(rows, len(found), sorted(unmatched), sorted(duplicates), store)
+    return ImportReport(rows, len(found), sorted(unmatched), sorted(duplicates), store, dropped)
 
 
 def default_crops_dir(paths: ProjectPaths) -> Path:
@@ -301,7 +303,9 @@ def run(args: argparse.Namespace, cfg: Config, paths: ProjectPaths | None = None
     total = len(list_folder_images(folder))
     print(f"\n{len(report.rows)} crop tangan: {accepted} diterima, {len(report.duplicates)} duplikat, "
           f"{len(report.unmatched)} tanpa foto asal")
-    print(f"{report.accepted_photos}/{total} foto punya kotak manual → {report.store}")
+    print(f"{report.accepted_photos}/{total} foto punya kotak manual → {report.store} (ditulis ulang)")
+    if report.dropped:
+        print(f"  {len(report.dropped)} kotak lama dihapus (bukan dari crop tangan saat ini): {', '.join(report.dropped)}")
     for name in report.unmatched:
         print(f"  TANPA FOTO ASAL: {name} — foto aslinya belum ada di {folder}, atau crop sudah diedit")
     if total > report.accepted_photos:

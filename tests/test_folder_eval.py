@@ -153,8 +153,11 @@ def test_import_hand_crops_matches_by_content(folder_setup, tmp_path):
     noise = np.random.default_rng(1).integers(0, 255, (120, 90, 3), dtype=np.uint8)
     cv2.imwrite(str(crops / "S02" / "asing.png"), noise)                                 # bukan dari foto dataset
 
+    from pcdface.dataset.annotations import save_annotations
+    save_annotations(store, {"S04/001.jpg": [(1, 2, 3, 4)], "S04/999.jpg": [(5, 6, 7, 8)]})   # sisa impor lama
     report = import_crops.import_crops(cfg, paths, folder, crops)
     assert report.unmatched == ["S02/asing.png"] and report.duplicates == ["S01/duplikat.jpg"]
+    assert report.dropped == ["S04/999.jpg"]                  # kotak basi tidak tertinggal
     imported = load_annotations(store)
     assert set(imported) == set(truth) and report.accepted_photos == len(truth)
     for key, boxes in imported.items():
