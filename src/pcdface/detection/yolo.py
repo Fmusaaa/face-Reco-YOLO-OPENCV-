@@ -101,20 +101,30 @@ def decode_ultralytics(output: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.n
     return boxes, scores, keypoints
 
 
-def decode_raw(outputs: list[np.ndarray], input_size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """Tiga tensor head mentah (1, 64+1+3k, H, W) → (kotak xyxy, skor, landmark atau None)."""
+def decode_raw(outputs: list[np.ndarray], input_size: int, min_score: float | None = None,
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Tiga tensor head mentah (1, 64+1+3k, H, W) → (kotak xyxy, skor, landmark atau None).
+
+    `min_score`: buang sel dengan skor ≤ ambang **sebelum** dekode DFL. Hasil setelah `postprocess`
+    identik (yang dibuang memang akan disaring di sana), tetapi jauh lebih cepat — dari ±8.400 sel
+    biasanya hanya puluhan yang lolos.
+    """
     all_boxes, all_scores, all_points = [], [], []
     bins = np.arange(REG_MAX, dtype=np.float64)
     for out in sorted(outputs, key=lambda o: -o.shape[2]):          # stride kecil dulu
         _, channels, grid_h, grid_w = out.shape
         stride = input_size / grid_h
-        pred = out[0].reshape(channels, grid_h * grid_w).T.astype(np.float64)   # (H·W, C), baris demi baris
+        flat = out[0].reshape(channels, grid_h * grid_w)
+        gx, gy = np.meshgrid(np.arange(grid_w) + 0.5, np.arange(grid_h) + 0.5)
+        gx, gy = gx.reshape(-1), gy.reshape(-1)
+        if min_score is not None:
+            keep = np.flatnonzero(_sigmoid(flat[4 * REG_MAX].astype(np.float64)) > min_score)
+            flat, gx, gy = flat[:, keep], gx[keep], gy[keep]
+        pred = flat.T.astype(np.float64)                                 # (sel, C), baris demi baris
         logits = pred[:, :4 * REG_MAX].reshape(-1, 4, REG_MAX)
         logits = logits - logits.max(axis=-1, keepdims=True)
         prob = np.exp(logits)
-        dist = (prob / prob.sum(axis=-1, keepdims=True)) @ bins           # (H·W, 4): kiri, atas, kanan, bawah
-        gx, gy = np.meshgrid(np.arange(grid_w) + 0.5, np.arange(grid_h) + 0.5)
-        gx, gy = gx.reshape(-1), gy.reshape(-1)
+        dist = (prob / prob.sum(axis=-1, keepdims=True)) @ bins           # (sel, 4): kiri, atas, kanan, bawah
         all_boxes.append(np.stack([gx - dist[:, 0], gy - dist[:, 1], gx + dist[:, 2], gy + dist[:, 3]], axis=1) * stride)
         all_scores.append(_sigmoid(pred[:, 4 * REG_MAX]))
         extra = channels - 4 * REG_MAX - 1
@@ -220,7 +230,7 @@ class YoloDetector(Detector):
         if self.layout == "ultralytics":
             boxes, scores, keypoints = decode_ultralytics(outputs[0])
         else:
-            boxes, scores, keypoints = decode_raw(outputs, self.input_size)
+            boxes, scores, keypoints = decode_raw(outputs, self.input_size, min_score=self.conf_threshold)
         out_boxes, out_scores, out_points = postprocess(
             boxes, scores, keypoints, lb, (width, height), self.conf_threshold, self.nms_iou, self.max_detections)
         elapsed_ms = (time.perf_counter() - start) * 1000.0

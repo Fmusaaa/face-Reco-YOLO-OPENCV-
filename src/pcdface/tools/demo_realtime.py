@@ -8,7 +8,13 @@ Tombol: 1/2/3… pilih detektor, d = detektor berikutnya, e = ganti enhancement
 (none ↔ clahe), r = pengenalan identitas LBPH aktif/nonaktif (butuh `enroll`),
 s = simpan tangkapan layar ke results/demo/, q/ESC = keluar.
 
-RUANG LINGKUP — sebutkan saat presentasi: setiap frame dideteksi ulang dari nol,
+Kecepatan (config `demo`): YOLO di demo memakai masukan `demo.yolo_input_size` (bawaan 416, ±30 FPS
+deteksi di CPU M4; eksperimen tetap 640, ±15 FPS) — wajah yang jauh lebih sulit terdeteksi. Dengan
+`demo.threaded`, deteksi berjalan di thread terpisah: video tampil mengikuti kamera dan kotak yang
+digambar berasal dari deteksi terakhir. HUD menampilkan FPS tampilan dan FPS deteksi terpisah.
+`--sync` kembali ke cara lama (setiap frame ditunggu deteksinya sebelum tampil).
+
+RUANG LINGKUP — sebutkan saat presentasi: setiap deteksi dihitung ulang dari nol,
 tanpa tracking. Nomor #1, #2 hanya urutan kiri → kanan di frame itu. Bila pengenalan
 aktif, wajah diberi kode peserta (S01, …) dari model LBPH yang hanya memuat peserta
 berizin; wajah lain berlabel "unknown" — sistem tidak pernah menampilkan nama.
@@ -18,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -42,21 +50,25 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 class DetectorCache:
     """Buat detektor saat pertama dipilih, simpan untuk dipakai ulang, tutup semua di akhir."""
 
-    def __init__(self, cfg: Config, names: list[str]) -> None:
+    def __init__(self, cfg: Config, names: list[str], yolo_input_size: int | None = None) -> None:
         self.cfg = cfg
         self.names = names
+        self.yolo_input_size = yolo_input_size   # None = ukuran masukan config detektor (seperti eksperimen)
         self._built: dict[str, Detector] = {}
 
     def get(self, name: str) -> Detector:
         if name not in self._built:
-            mode = "video" if isinstance(self.cfg.detector(name), MediaPipeConfig) else "image"
-            self._built[name] = build_detector(name, self.cfg, running_mode=mode)
+            spec = self.cfg.detector(name)
+            mode = "video" if isinstance(spec, MediaPipeConfig) else "image"
+            overrides = ({"input_size": self.yolo_input_size}
+                         if isinstance(spec, YoloConfig) and self.yolo_input_size else None)
+            self._built[name] = build_detector(name, self.cfg, running_mode=mode, overrides=overrides)
         return self._built[name]
 
     def device(self, name: str) -> str:
         spec = self.cfg.detector(name)
         if isinstance(spec, YoloConfig):
-            return "CPU, OpenCV DNN"
+            return f"CPU, OpenCV DNN, {self.yolo_input_size or spec.input_size}px"
         if not isinstance(spec, MediaPipeConfig):
             return "CPU"
         from pcdface.detection.mediapipe_detector import delegate_label, resolve_delegate
@@ -104,11 +116,16 @@ def draw_detections(canvas: np.ndarray, result: DetectionResult,
 
 
 def draw_hud(canvas: np.ndarray, name: str, device: str, enhancement: str, faces: int,
-             detect_ms: float, fps: float, recognizing: bool = False) -> None:
-    lines = [f"Detektor : {name} ({device})", f"Enhance  : {enhancement}", f"Wajah    : {faces}",
-             f"Deteksi  : {detect_ms:.1f} ms | {fps:.1f} FPS", f"Kenali   : {'LBPH aktif' if recognizing else 'mati'}"]
+             detect_ms: float, fps: float, recognizing: bool = False, detect_fps: float | None = None) -> None:
+    """`fps` = frame yang tampil per detik; `detect_fps` = deteksi selesai per detik (mode thread)."""
+    if detect_fps is None:
+        speed = [f"Deteksi  : {detect_ms:.1f} ms | {fps:.1f} FPS"]
+    else:
+        speed = [f"Tampilan : {fps:.1f} FPS", f"Deteksi  : {detect_ms:.1f} ms | {detect_fps:.1f} FPS"]
+    lines = [f"Detektor : {name} ({device})", f"Enhance  : {enhancement}", f"Wajah    : {faces}", *speed,
+             f"Kenali   : {'LBPH aktif' if recognizing else 'mati'}"]
     overlay = canvas.copy()
-    cv2.rectangle(overlay, (0, 0), (330, 16 + 22 * len(lines)), HUD_BG, -1)
+    cv2.rectangle(overlay, (0, 0), (400, 16 + 22 * len(lines)), HUD_BG, -1)
     cv2.addWeighted(overlay, 0.7, canvas, 0.3, 0, canvas)
     for i, line in enumerate(lines):
         cv2.putText(canvas, line, (10, 28 + 22 * i), FONT, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
@@ -116,6 +133,7 @@ def draw_hud(canvas: np.ndarray, name: str, device: str, enhancement: str, faces
     cv2.putText(canvas, "1/2/3 atau d = detektor  e = enhancement  r = kenali  s = simpan  q = keluar",
                 (10, height - 34), FONT, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
     scope = ("kode peserta berizin dari LBPH, lainnya 'unknown' - tanpa nama" if recognizing
+             else "kotak dari deteksi terakhir - tanpa tracking, tanpa pengenalan identitas" if detect_fps is not None
              else "deteksi per frame - tanpa tracking, tanpa pengenalan identitas")
     cv2.putText(canvas, scope, (10, height - 12), FONT, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
@@ -132,9 +150,10 @@ def recognize(frame: np.ndarray, boxes: list, recognizer: LBPHRecognizer, mirror
             for x, y, w, h in boxes]
 
 
-def process_frame(frame: np.ndarray, detector: Detector, enhancement: str, cfg: Config,
-                  timestamp_ms: int | None = None, recognizer: LBPHRecognizer | None = None,
-                  mirrored: bool = False) -> tuple[np.ndarray, DetectionResult]:
+def detect_frame(frame: np.ndarray, detector: Detector, enhancement: str, cfg: Config,
+                 timestamp_ms: int | None = None, recognizer: LBPHRecognizer | None = None,
+                 mirrored: bool = False) -> tuple[np.ndarray, DetectionResult, list[Prediction] | None]:
+    """(citra setelah enhancement, hasil deteksi, identitas LBPH atau None)."""
     pre = cfg.preprocessing
     image = enhance(frame, enhancement, pre.clahe_clip_limit, pre.clahe_tile_grid)
     if timestamp_ms is not None and hasattr(detector, "running_mode") and detector.running_mode == "video":
@@ -142,9 +161,87 @@ def process_frame(frame: np.ndarray, detector: Detector, enhancement: str, cfg: 
     else:
         result = detector.detect(image)
     identities = recognize(frame, result.boxes, recognizer, mirrored) if recognizer is not None else None
+    return image, result, identities
+
+
+def process_frame(frame: np.ndarray, detector: Detector, enhancement: str, cfg: Config,
+                  timestamp_ms: int | None = None, recognizer: LBPHRecognizer | None = None,
+                  mirrored: bool = False) -> tuple[np.ndarray, DetectionResult]:
+    image, result, identities = detect_frame(frame, detector, enhancement, cfg, timestamp_ms, recognizer, mirrored)
     canvas = image.copy()
     draw_detections(canvas, result, identities)
     return canvas, result
+
+
+@dataclass(frozen=True)
+class Job:
+    frame: np.ndarray
+    name: str
+    enhancement: str
+    timestamp_ms: int
+    recognizer: LBPHRecognizer | None
+    mirrored: bool
+
+
+@dataclass(frozen=True)
+class Latest:
+    name: str
+    enhancement: str
+    result: DetectionResult
+    identities: list[Prediction] | None
+    fps: float               # deteksi selesai per detik (rata-rata bergerak)
+
+
+class DetectionWorker:
+    """Deteksi di thread terpisah: selalu memproses frame terbaru, frame yang terlewat dibuang.
+
+    Seluruh detektor dibuat, dipakai, dan ditutup di thread ini (MediaPipe delegate GPU terikat
+    pada thread pembuatnya). Thread utama hanya mengirim frame dan membaca hasil terakhir.
+    """
+
+    def __init__(self, cache: DetectorCache, cfg: Config) -> None:
+        self.cache, self.cfg = cache, cfg
+        self._cond = threading.Condition()
+        self._job: Job | None = None
+        self._stop = False
+        self.latest: Latest | None = None
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="pcdface-deteksi", daemon=True)
+        self._thread.start()
+
+    def submit(self, job: Job) -> None:
+        with self._cond:
+            self._job = job              # frame lama yang belum diproses ditimpa
+            self._cond.notify()
+
+    def _run(self) -> None:
+        fps, last = 0.0, None
+        try:
+            while True:
+                with self._cond:
+                    while self._job is None and not self._stop:
+                        self._cond.wait()
+                    if self._stop:
+                        return
+                    job, self._job = self._job, None
+                _, result, identities = detect_frame(job.frame, self.cache.get(job.name), job.enhancement, self.cfg,
+                                                     job.timestamp_ms, job.recognizer, job.mirrored)
+                now = time.perf_counter()
+                if last is not None:
+                    rate = 1.0 / max(now - last, 1e-6)
+                    fps = 0.9 * fps + 0.1 * rate if fps else rate
+                last = now
+                self.latest = Latest(job.name, job.enhancement, result, identities, fps)
+        except BaseException as error:  # dilaporkan ke thread utama
+            self.error = error
+        finally:
+            self.cache.close()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        with self._cond:
+            self._stop = True
+            self._cond.notify()
+        self._thread.join(timeout)
 
 
 def load_recognizer(cfg: Config) -> LBPHRecognizer | None:
@@ -185,8 +282,32 @@ def run_selftest(cfg: Config, names: list[str]) -> int:
             failures += not _selftest_recognition(cfg, cache.get(usable[0]), rng)
     finally:
         cache.close()
+    if usable:
+        failures += not _selftest_worker(cfg, usable, rng)
     print("Uji mandiri demo: " + ("LULUS" if failures == 0 and usable else "GAGAL"))
     return 0 if failures == 0 and usable else 1
+
+
+def _selftest_worker(cfg: Config, names: list[str], rng: np.random.Generator) -> bool:
+    """Jalur thread: frame dikirim lebih cepat dari deteksi, hasil terakhir tetap terbaca, berhenti bersih."""
+    from pcdface.synthetic import FaceSpec, render_scene
+
+    width, height = cfg.capture.width, cfg.capture.height
+    frame, _ = render_scene(width, height, [FaceSpec(width // 2, int(height * 0.45), 200, (150, 175, 220))],
+                            "normal", rng)
+    worker = DetectionWorker(DetectorCache(cfg, names, yolo_input_size=cfg.demo.yolo_input_size), cfg)
+    try:
+        deadline = time.monotonic() + 30
+        for i in range(60):
+            worker.submit(Job(frame, names[0], "none", i * 33, None, False))
+            time.sleep(0.005)
+        while worker.latest is None and worker.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        worker.stop()
+    ok = worker.error is None and worker.latest is not None and worker.latest.name == names[0]
+    print(f"  {'thread':<9} {'OK' if ok else 'GAGAL'}  (60 frame dikirim, frame lama dibuang, hasil terakhir terbaca)")
+    return ok
 
 
 def _selftest_recognition(cfg: Config, detector: Detector, rng: np.random.Generator) -> bool:
@@ -220,6 +341,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enhance", default="none", choices=ENHANCEMENTS)
     parser.add_argument("--camera", type=int, default=None)
     parser.add_argument("--no-mirror", action="store_true", help="Jangan cerminkan tampilan")
+    parser.add_argument("--yolo-input", type=int, default=None,
+                        help="Sisi masukan YOLO di demo (bawaan: demo.yolo_input_size; 640 = sama dengan eksperimen)")
+    parser.add_argument("--sync", action="store_true",
+                        help="Tanpa thread: setiap frame menunggu deteksinya (cara lama, FPS = FPS deteksi)")
     parser.add_argument("--selftest", action="store_true", help="Uji tanpa kamera dan tanpa jendela")
 
 
@@ -250,11 +375,19 @@ def run(args: argparse.Namespace, cfg: Config) -> int:
               "System Settings → Privacy & Security → Camera.", file=sys.stderr)
         return 1
 
-    cache = DetectorCache(cfg, names)
+    yolo_input = args.yolo_input or cfg.demo.yolo_input_size
+    if yolo_input < 64 or yolo_input % 32:
+        print("[GAGAL] --yolo-input harus kelipatan 32 dan >= 64 (mis. 320, 416, 480, 640)", file=sys.stderr)
+        return 2
+    threaded = cfg.demo.threaded and not args.sync
+    cache = DetectorCache(cfg, names, yolo_input_size=yolo_input)
+    worker = DetectionWorker(cache, cfg) if threaded else None
     recognizer: LBPHRecognizer | None = None
     recognizing = False
     print("Detektor: " + ", ".join(f"{i}={n}" for i, n in enumerate(names, start=1)))
-    print("Catatan: deteksi per frame, tanpa tracking. Tombol r = pengenalan LBPH (kode peserta berizin).")
+    print(f"YOLO demo: masukan {yolo_input}px; {'deteksi di thread terpisah' if threaded else 'sinkron (--sync)'}.")
+    print("Catatan: tanpa tracking. Tombol r = pengenalan LBPH (kode peserta berizin).")
+    pre = cfg.preprocessing
     fps, last, start = 0.0, time.perf_counter(), time.monotonic()
     try:
         while True:
@@ -264,16 +397,28 @@ def run(args: argparse.Namespace, cfg: Config) -> int:
                 return 1
             if not args.no_mirror:
                 frame = cv2.flip(frame, 1)
-            detector = cache.get(current)
-            canvas, result = process_frame(frame, detector, enhancement, cfg,
-                                           timestamp_ms=int((time.monotonic() - start) * 1000),
-                                           recognizer=recognizer if recognizing else None,
-                                           mirrored=not args.no_mirror)
+            timestamp_ms = int((time.monotonic() - start) * 1000)
+            active_recognizer = recognizer if recognizing else None
+            if worker is not None:
+                if worker.error is not None:
+                    raise worker.error
+                worker.submit(Job(frame, current, enhancement, timestamp_ms, active_recognizer, not args.no_mirror))
+                canvas = enhance(frame, enhancement, pre.clahe_clip_limit, pre.clahe_tile_grid)
+                latest = worker.latest
+                fresh = latest is not None and (latest.name, latest.enhancement) == (current, enhancement)
+                if fresh:
+                    draw_detections(canvas, latest.result, latest.identities)
+                result = latest.result if fresh else DetectionResult(boxes=[], scores=None, elapsed_ms=0.0)
+                detect_fps: float | None = latest.fps if fresh else 0.0
+            else:
+                canvas, result = process_frame(frame, cache.get(current), enhancement, cfg, timestamp_ms=timestamp_ms,
+                                               recognizer=active_recognizer, mirrored=not args.no_mirror)
+                detect_fps = None
             now = time.perf_counter()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-6)) if fps else 1.0 / max(now - last, 1e-6)
             last = now
             draw_hud(canvas, current, cache.device(current), enhancement, len(result.boxes), result.elapsed_ms, fps,
-                     recognizing)
+                     recognizing, detect_fps=detect_fps)
             cv2.imshow(WINDOW, canvas)
 
             key = lower_key(cv2.waitKey(1))
@@ -303,7 +448,10 @@ def run(args: argparse.Namespace, cfg: Config) -> int:
             if (current, enhancement) != before:
                 print(f"  detektor={current} enhancement={enhancement}")
     finally:
-        cache.close()
+        if worker is not None:
+            worker.stop()        # worker menutup detektornya sendiri di thread-nya
+        else:
+            cache.close()
         camera.release()
         cv2.destroyAllWindows()
     return 0

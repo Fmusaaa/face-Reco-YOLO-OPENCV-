@@ -47,6 +47,18 @@ def test_raw_head_decodes_dfl_box_back_to_image():
     assert len(found_points) == 1 and len(found_points[0]) == 5
 
 
+def test_raw_decode_prefilter_gives_identical_detections():
+    """Penyaringan skor sebelum DFL (demo cepat) tidak mengubah hasil akhir setelah postprocess."""
+    rng = np.random.default_rng(3)
+    raw = [o + rng.normal(0, 1.5, o.shape).astype(o.dtype) for o in yolo_raw_outputs((16, 10, 15), bins=2)]
+    lb = Letterbox(0.5, 0, 140)
+    full = postprocess(*decode_raw(raw, 640), lb, (1280, 720), 0.25, 0.7, 300)
+    boxes, scores, points = decode_raw(raw, 640, min_score=0.25)
+    assert len(boxes) < 80 * 80 + 40 * 40 + 20 * 20 and (scores > 0.25).all()
+    assert postprocess(boxes, scores, points, lb, (1280, 720), 0.25, 0.7, 300) == full
+    assert decode_raw(raw, 640, min_score=0.9999)[0].shape == (0, 4)      # tidak ada yang lolos → tetap aman
+
+
 @pytest.mark.parametrize("stride, gx, gy", [(8, 3, 70), (32, 19, 0)])
 def test_raw_head_cell_center_per_stride(stride, gx, gy):
     """Pusat kotak = (sel + 0,5) × stride, di semua skala."""
@@ -104,6 +116,16 @@ def test_yolo_config_parsed_and_validated(cfg):
     message = str(error.value)
     assert "detectors.yolo_n.model" in message and "detectors.yolo_n.input_size" in message
     assert "experiments.e8.detector" in message
+
+
+def test_demo_yolo_input_is_separate_from_experiments(cfg):
+    """Demo memakai masukan YOLO lebih kecil demi FPS; detektor eksperimen tetap 640."""
+    assert cfg.demo.yolo_input_size < cfg.detector("yolo_n").input_size == 640
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    broken = copy.deepcopy(raw)
+    broken["demo"]["yolo_input_size"] = 400          # bukan kelipatan stride 32
+    with pytest.raises(ConfigError, match="demo.yolo_input_size"):
+        parse_config(broken)
 
 
 def test_download_list_has_pinned_yolo_and_rejects_html(tmp_path):

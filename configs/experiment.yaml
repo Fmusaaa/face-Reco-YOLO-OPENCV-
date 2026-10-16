@@ -152,6 +152,10 @@ recognition:                         # LBPH (Ahonen dkk., 2006) seperti repo ref
   grid_x: 8
   grid_y: 8
 
+demo:                                # demo webcam saja (python -m pcdface demo) — eksperimen E1–E9 tidak terpengaruh
+  yolo_input_size: 416               # 640 → ±15 FPS deteksi di CPU M4; 416 → ±30 FPS; 320 → ±45 FPS (wajah jauh lebih sulit)
+  threaded: true                     # video mengikuti kamera, deteksi di thread terpisah (kotak dari deteksi terakhir)
+
 stats:
   ci_level: 0.95
 

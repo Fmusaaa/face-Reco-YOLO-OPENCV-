@@ -675,7 +675,7 @@ pcd-face-detection/
 | `annotate --folder <folder>` | Kotak manual untuk foto lepas `<folder>/S01/*.jpg` berukuran apa saja (E9, alternatif crop tangan) |
 | `eval-folder --input <folder> [--detectors haar] [--compare-only]` | E9: deteksi per model (bisa satu per satu), lalu perbandingan semua model yang sudah dijalankan |
 | `report` | Bangun ulang tabel dan grafik dari hasil tersimpan |
-| `demo --detector mp_short` | Demo realtime; tombol untuk ganti detektor saat berjalan, `r` = pengenalan LBPH (v4) |
+| `demo --detector mp_short [--yolo-input 416] [--sync]` | Demo realtime; tombol untuk ganti detektor saat berjalan, `r` = pengenalan LBPH (v4). YOLO di demo memakai `demo.yolo_input_size` (416: ±30 FPS deteksi di CPU M4, 640: ±15 FPS) dan deteksi berjalan di thread terpisah sehingga video mengikuti kamera; HUD memisahkan FPS tampilan dan FPS deteksi. Eksperimen E1–E9 tetap memakai masukan 640 (§12.2 butir 12) |
 | `forget S03` | Hapus seluruh data satu subjek |
 | `selftest` | Uji seluruh metrik dengan nilai acuan + jalur Haar/YCbCr/Fake pada citra sintetis, tanpa webcam dan tanpa model |
 

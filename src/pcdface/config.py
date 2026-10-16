@@ -229,6 +229,14 @@ class SyntheticConfig:
 
 
 @dataclass(frozen=True)
+class DemoConfig:
+    """Demo webcam saja — tidak memengaruhi eksperimen E1–E9."""
+
+    yolo_input_size: int            # sisi masukan YOLO di demo (eksperimen tetap memakai detectors.<yolo>.input_size)
+    threaded: bool                  # deteksi di thread terpisah: video mengikuti kamera, kotak dari deteksi terakhir
+
+
+@dataclass(frozen=True)
 class Config:
     seed: int
     paths: ProjectPaths
@@ -241,6 +249,7 @@ class Config:
     stats: StatsConfig
     synthetic: SyntheticConfig
     recognition: RecognitionConfig
+    demo: DemoConfig
     raw: dict[str, Any]
     source: Path | None = None
 
@@ -599,6 +608,13 @@ def parse_config(raw: Mapping[str, Any], root: Path = PROJECT_ROOT, source: Path
         grid_y=r.get(rc, "grid_y", "recognition.", _int, lambda v: v >= 1, ">= 1"),
     )
 
+    dm = r.section(raw, "demo", "")
+    demo = DemoConfig(
+        yolo_input_size=r.get(dm, "yolo_input_size", "demo.", _int, lambda v: v >= 64 and v % 32 == 0,
+                              "kelipatan 32, >= 64 (stride YOLO)"),
+        threaded=r.get(dm, "threaded", "demo.", _bool),
+    )
+
     if r.errors:
         where = f" ({source})" if source else ""
         raise ConfigError(f"config tidak valid{where}:\n  - " + "\n  - ".join(r.errors))
@@ -616,6 +632,7 @@ def parse_config(raw: Mapping[str, Any], root: Path = PROJECT_ROOT, source: Path
         stats=stats,
         synthetic=synthetic,
         recognition=recognition,
+        demo=demo,
         raw=copy.deepcopy(dict(raw)),
         source=source,
     )
