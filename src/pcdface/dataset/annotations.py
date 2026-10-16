@@ -13,6 +13,10 @@ Format:
 Kunci adalah path relatif terhadap `data/raw/`. Daftar kosong berarti citra
 sudah dianotasi dan memang tidak memuat wajah — berbeda dari kunci yang tidak
 ada (belum dianotasi). Tidak ada medan nama atau identitas.
+
+Foto lepas per peserta (`annotate --folder`, E9) memakai format yang sama di berkas
+terpisah `folder_<nama folder>.json`, dengan kunci relatif terhadap folder itu
+(`S01/001.jpg`).
 """
 
 from __future__ import annotations
@@ -21,10 +25,26 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pcdface.boxes import Box, to_box
 
+if TYPE_CHECKING:
+    from pcdface.paths import ProjectPaths
+
 FORMAT_VERSION = 1
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp")
+
+
+def folder_annotations_path(paths: ProjectPaths, folder: Path) -> Path:
+    """Berkas anotasi untuk foto lepas di `folder`, di samping `boxes.json`."""
+    return paths.annotations.parent / f"folder_{folder.resolve().name}.json"
+
+
+def list_folder_images(folder: Path) -> list[str]:
+    """Foto di `folder/<kode peserta>/` sebagai kunci relatif (`S01/001.jpg`), terurut."""
+    return sorted(p.relative_to(folder).as_posix() for p in folder.glob("*/*")
+                  if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
 
 
 def load_annotations(path: Path) -> dict[str, list[Box]]:

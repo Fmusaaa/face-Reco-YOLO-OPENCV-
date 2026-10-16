@@ -24,7 +24,7 @@ import numpy as np
 
 from pcdface.boxes import Box
 from pcdface.config import Config
-from pcdface.dataset.annotations import save_annotations
+from pcdface.dataset.annotations import folder_annotations_path, save_annotations
 from pcdface.dataset.metadata import (
     CaptureSpec,
     MetadataRow,
@@ -69,6 +69,7 @@ class FaceSpec:
     pose: str = ""
     expression: str = ""
     occlusion: str = ""
+    trait: int | None = None        # ciri identitas (pola tahi lalat) — membuat peserta sintetis bisa dibedakan LBPH
 
 
 def face_width_px(distance_cm: float, focal_px: float, face_width_cm: float) -> int:
@@ -118,6 +119,7 @@ def _draw_person(canvas: np.ndarray, mask: np.ndarray, face: FaceSpec) -> Box:
     fill_rect((cx - int(0.22 * w), cy + int(0.3 * h)), (cx + int(0.22 * w), cy + half_h + int(0.4 * w)), face.tone)
     fill_ellipse((cx, top + int(0.12 * h)), (int(0.56 * w), int(0.3 * h)), HAIR_BGR)
     fill_ellipse((cx, cy), (half_w, half_h), face.tone)
+    _draw_trait(canvas, face, (cx, cy, half_w, half_h), (dx, dy))
 
     # posisi fitur bergeser untuk pose; ekspresi mengubah alis dan mulut
     eye_dx = int(0.2 * w)
@@ -145,6 +147,30 @@ def _draw_person(canvas: np.ndarray, mask: np.ndarray, face: FaceSpec) -> Box:
                     0, start, end, (45, 45, 110), -1, cv2.LINE_AA)
     _draw_occlusion(canvas, face, (cx, cy, w, h), (dx, dy))
     return (cx - half_w, top, w, h)
+
+
+def _draw_trait(canvas: np.ndarray, face: FaceSpec, geometry: tuple[int, int, int, int],
+                shift: tuple[float, float]) -> None:
+    """Pola tahi lalat khas tiap peserta sintetis — pengganti ciri wajah untuk uji pengenalan.
+
+    Warna kulit saja tidak cukup: LBP tidak peka perubahan kecerahan monoton, jadi tanpa
+    ciri tekstur semua peserta sintetis tampak sama bagi LBPH. Bintik kecil (±3% lebar wajah)
+    ikut hilang pada wajah jauh dan tertutup masker — perilaku yang mirip ciri wajah asli.
+    """
+    if face.trait is None:
+        return
+    cx, cy, half_w, half_h = geometry
+    dx, dy = shift
+    rng = np.random.default_rng(1000 + face.trait)
+    spot = tuple(int(c * 0.45) for c in face.tone)
+    drawn = 0
+    while drawn < 6:
+        u, v = rng.uniform(-0.75, 0.75), rng.uniform(-0.7, 0.6)
+        if u * u + v * v > 0.6:
+            continue
+        radius = max(1, int(round(rng.uniform(0.02, 0.045) * 2 * half_w)))
+        cv2.circle(canvas, (int(cx + u * half_w + dx), int(cy + v * half_h + dy)), radius, spot, -1, cv2.LINE_AA)
+        drawn += 1
 
 
 MASK_BGR = (225, 205, 170)          # masker biru muda
@@ -255,8 +281,10 @@ def generate_dataset(cfg: Config, data_root: Path, seed: int | None = None) -> P
 
     subject_ids = [f"S{i:02d}" for i in range(1, syn.subjects + 1)]
     tones = {sid: SKIN_TONES[i % len(SKIN_TONES)] for i, sid in enumerate(subject_ids)}
+    traits = {sid: i for i, sid in enumerate(subject_ids)}
     write_subjects(paths.subjects, [
-        SubjectRow(sid, consent_research=True, consent_publication=(i % 2 == 0), consent_date="2026-09-30")
+        SubjectRow(sid, consent_research=True, consent_publication=(i % 2 == 0), consent_date="2026-09-30",
+                   consent_recognition=True)
         for i, sid in enumerate(subject_ids)
     ])
 
@@ -282,6 +310,7 @@ def generate_dataset(cfg: Config, data_root: Path, seed: int | None = None) -> P
             pose=pose,
             expression=expression,
             occlusion=occlusion,
+            trait=traits[sid],
         )
 
     for sid in subject_ids:
@@ -330,6 +359,7 @@ def generate_dataset(cfg: Config, data_root: Path, seed: int | None = None) -> P
                     center_y=int(height * 0.42 + rng.integers(-15, 16)),
                     width=min(face_width_px(distance, syn.focal_px, syn.face_width_cm), int(slot * 0.8)),
                     tone=tones[sid],
+                    trait=traits[sid],
                 )
                 for k, (sid, distance) in enumerate(zip(people, positions))
             ]
@@ -345,3 +375,36 @@ def generate_dataset(cfg: Config, data_root: Path, seed: int | None = None) -> P
     save_annotations(paths.annotations, annotations)
     paths.crops.mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def generate_folder(cfg: Config, paths: ProjectPaths, folder: Path, photos_per_subject: int = 8,
+                    size: tuple[int, int] = (960, 720), seed: int | None = None) -> Path:
+    """Foto lepas sintetis per peserta (`folder/S01/001.jpg`, …) untuk E9 / `eval-folder --synthetic`.
+
+    Ukuran foto sengaja bukan 1280×720 (foto lepas berukuran apa saja); jarak acak 60–160 cm.
+    Menulis kotak manual ke `folder_annotations_path` dan `subjects.csv` (semua berizin)."""
+    rng = np.random.default_rng(cfg.seed if seed is None else seed)
+    syn = cfg.synthetic
+    width, height = size
+    subject_ids = [f"S{i:02d}" for i in range(1, syn.subjects + 1)]
+    write_subjects(paths.subjects, [SubjectRow(sid, consent_research=True, consent_publication=False,
+                                               consent_date="2026-10-12", consent_recognition=True)
+                                    for sid in subject_ids])
+    annotations: dict[str, list[Box]] = {}
+    for i, sid in enumerate(subject_ids):
+        (folder / sid).mkdir(parents=True, exist_ok=True)
+        for index in range(1, photos_per_subject + 1):
+            distance = float(rng.uniform(60, 160))
+            face = FaceSpec(
+                center_x=int(width / 2 + rng.integers(-80, 81)),
+                center_y=int(height * 0.45 + rng.integers(-20, 21)),
+                width=face_width_px(distance, syn.focal_px, syn.face_width_cm),
+                tone=SKIN_TONES[i % len(SKIN_TONES)],
+                trait=i,
+            )
+            image, boxes = render_scene(width, height, [face], "normal", rng)
+            key = f"{sid}/{index:03d}.jpg"
+            cv2.imwrite(str(folder / key), image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            annotations[key] = boxes
+    save_annotations(folder_annotations_path(paths, folder), annotations)
+    return folder

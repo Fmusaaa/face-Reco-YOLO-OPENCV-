@@ -1,4 +1,4 @@
-"""Grafik PRD §10 (8 grafik minimum + grafik 9–12 untuk E6 dan E7) — PNG 300 dpi + PDF, dibangun dari CSV hasil.
+"""Grafik PRD §10 (8 grafik minimum + grafik 9–12 untuk E6 dan E7, 13–15 untuk E8, 16–19 untuk E9) — PNG 300 dpi + PDF, dibangun dari CSV hasil.
 
 Semua grafik hanya membaca tabel `.csv` di folder eksperimen, sehingga
 `python -m pcdface report` bisa membangunnya ulang tanpa menjalankan detektor.
@@ -40,6 +40,9 @@ DETECTOR_STYLE: dict[str, tuple[str, str]] = {
     "mp_full": ("#1baf7a", "^"),
     "mp_sparse": ("#4a3aa7", "v"),
     "ycbcr": ("#e87ba4", "P"),
+    "yolo_n": ("#eda100", "X"),       # slot 4: urutan haar–mp_short–mp_full–yolo_n lolos validator
+    "yolo_m": ("#008300", "h"),
+    "manual": ("#52514e", "D"),       # E8: kotak manual = pembanding netral, bukan detektor
 }
 FALLBACK = ("#52514e", "x")
 SEQUENTIAL = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
@@ -47,6 +50,7 @@ LABEL = {
     "haar": "Haar", "haar_eq": "Haar (equalize)", "haar_noeq": "Haar (tanpa equalize)",
     "mp_short": "MediaPipe short", "mp_full": "MediaPipe full", "mp_sparse": "MediaPipe sparse",
     "ycbcr": "YCbCr",
+    "yolo_n": "YOLOv8n-face", "yolo_m": "YOLOv8m-face", "manual": "kotak manual",
 }
 DPI = 300
 
@@ -341,8 +345,9 @@ def plot_speed(out_dir: Path) -> list[Path]:
     ax.set_xticks(x, [r.replace("x", "×") for r in resolutions])
     ax.set_ylabel("Waktu per frame (ms)")
     ax.yaxis.set_major_formatter(_comma(0))
-    ax.set_title("Waktu deteksi: median, galat hingga persentil ke-95", loc="left")
-    ax.legend(loc="upper right")
+    ax.set_title("Waktu deteksi: median, galat hingga persentil ke-95", loc="left", pad=8 + 14 * ((len(detectors) + 1) // 2))
+    # legenda di atas area plot: dengan ≥ 4 detektor, legenda di dalam plot menutupi batang
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncols=2)
     ax.grid(axis="x", visible=False)
     return _save(fig, out_dir, "grafik8_kecepatan")
 
@@ -483,6 +488,268 @@ def plot_blur(out_dir: Path) -> list[Path]:
     return _save(fig, out_dir, "grafik12_recall_blur")
 
 
+# ---------------------------------------------------------------------------
+# E8
+# ---------------------------------------------------------------------------
+def _source_label(name: str) -> str:
+    return "kotak manual (LBPH saja)" if name == "manual" else f"{_label(name)} + LBPH"
+
+
+def _accuracy_axis(ax: plt.Axes) -> None:
+    ax.set_ylim(-0.03, 1.03)
+    ax.yaxis.set_major_formatter(_comma(1))
+    ax.set_ylabel("Akurasi rank-1")
+
+
+def plot_recognition_distance(out_dir: Path) -> list[Path]:
+    """Grafik 13: akurasi pengenalan terhadap jarak, per sumber kotak; titik 100 cm = foto uji acuan."""
+    df = _read(out_dir, "e8_per_kondisi")
+    if df is None:
+        return []
+    fig, ax = plt.subplots(figsize=(6.4, 3.9))
+    plotted = False
+    for source, part in df.groupby("sumber", sort=False):
+        distance = part[part["faktor"] == "jarak"]
+        if distance.empty:
+            continue
+        # baris acuan membawa jarak acuan (foto uji depan/netral/tanpa) — mengisi titik jarak galeri
+        both = pd.concat([distance, part[part["faktor"] == "acuan"]]).sort_values("jarak_cm")
+        color, marker = _style(source)
+        ax.fill_between(both["jarak_cm"], both["akurasi_low"], both["akurasi_high"], color=color, alpha=0.14,
+                        linewidth=0)
+        ax.plot(both["jarak_cm"], both["akurasi"], color=color, marker=marker, label=_source_label(source))
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return []
+    ax.set_xlabel("Jarak kamera–wajah (cm)")
+    _accuracy_axis(ax)
+    ax.set_xticks(sorted(set(df.loc[df["faktor"].isin(["jarak", "acuan"]), "jarak_cm"].dropna())))
+    ax.set_title("Akurasi pengenalan LBPH terhadap jarak, pita = Wilson 95%", loc="left")
+    fig.text(0.01, -0.03, "Galeri: set jarak di jarak acuan. Titik di jarak acuan = foto uji depan/netral/tanpa "
+             "yang direkam di momen lain.", color=INK_2, fontsize=8, ha="left")
+    ax.legend(loc="lower left")
+    return _save(fig, out_dir, "grafik13_pengenalan_jarak")
+
+
+def plot_recognition_conditions(out_dir: Path) -> list[Path]:
+    """Grafik 14: akurasi pengenalan per cahaya, pose (jarak acuan), ekspresi, dan oklusi."""
+    df = _read(out_dir, "e8_per_kondisi")
+    if df is None:
+        return []
+    reference = df[df["faktor"] == "acuan"]
+    panels = []
+    for factor, title in (("cahaya", "Cahaya"), ("pose", "Pose (jarak terdekat)"), ("ekspresi", "Ekspresi"),
+                          ("oklusi", "Penutup wajah")):
+        part = df[df["faktor"] == factor]
+        if factor == "pose" and not part.empty:
+            part = part[part["jarak_cm"] == part["jarak_cm"].min()]
+        if factor == "cahaya" and not part.empty and not reference.empty:
+            part = pd.concat([reference.assign(level="normal (acuan)"), part])
+        if not part.empty:
+            panels.append((title, part))
+    if not panels:
+        return []
+    widths = [max(len(part["level"].unique()), 2) for _, part in panels]
+    fig, axes = plt.subplots(1, len(panels), figsize=(0.62 * sum(widths) + 2.0, 3.9), sharey=True,
+                             gridspec_kw={"width_ratios": widths}, squeeze=False)
+    sources = list(dict.fromkeys(df["sumber"]))
+    width = 0.5 / max(len(sources), 1)
+    for ax, (title, part) in zip(axes[0], panels):
+        levels = list(dict.fromkeys(part["level"]))
+        x = np.arange(len(levels), dtype=float)
+        for i, source in enumerate(sources):
+            rows = part[part["sumber"] == source].drop_duplicates("level").set_index("level").reindex(levels)
+            color, marker = _style(source)
+            value = rows["akurasi"].to_numpy(dtype=float)
+            err = np.vstack([value - rows["akurasi_low"].to_numpy(dtype=float),
+                             rows["akurasi_high"].to_numpy(dtype=float) - value])
+            ax.errorbar(x + (i - (len(sources) - 1) / 2) * width, value, yerr=err, fmt=marker, color=color,
+                        ecolor=color, elinewidth=1.0, capsize=2.5, markersize=6,
+                        label=_source_label(source) if ax is axes[0][0] else None)
+        ax.set_xticks(x, [str(v).replace("_", " ") for v in levels], rotation=45, ha="right", fontsize=8)
+        ax.set_title(title, loc="left", fontsize=10)
+        ax.grid(axis="x", visible=False)
+    _accuracy_axis(axes[0][0])
+    fig.legend(loc="lower left", bbox_to_anchor=(0.01, 0.98), ncols=len(sources))
+    fig.suptitle("Akurasi pengenalan LBPH per kondisi, galat = Wilson 95%", x=0.01, y=1.1, ha="left",
+                 color=INK, fontsize=11.5)
+    return _save(fig, out_dir, "grafik14_pengenalan_kondisi")
+
+
+def plot_recognition_threshold(out_dir: Path) -> list[Path]:
+    """Grafik 15: kurva DIR terhadap FAR (open-set) per sumber kotak; titik = ambang config."""
+    curve, summary = _read(out_dir, "e8_ambang"), _read(out_dir, "e8_ringkasan")
+    if curve is None:
+        return []
+    fig, ax = plt.subplots(figsize=(5.4, 4.2))
+    for source, part in curve.groupby("sumber", sort=False):
+        color, marker = _style(source)
+        part = part.sort_values("ambang")
+        ax.plot(part["far"], part["dir"], color=color, label=_source_label(source))
+        if summary is not None and source in set(summary["sumber"]):
+            point = summary[summary["sumber"] == source].iloc[0]
+            ax.plot(point["far"], point["dir"], marker=marker, color=color, markersize=10,
+                    markeredgecolor=SURFACE, markeredgewidth=1.2, zorder=5)
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.xaxis.set_major_formatter(_comma(1))
+    ax.yaxis.set_major_formatter(_comma(1))
+    ax.set_xlabel("FAR — peserta tak dikenal diterima")
+    ax.set_ylabel("DIR — dikenali benar dan diterima")
+    ax.set_title("Kurva DIR–FAR LBPH (titik = ambang config)", loc="left")
+    ax.legend(loc="lower right")
+    return _save(fig, out_dir, "grafik15_pengenalan_ambang")
+
+
+
+# ---------------------------------------------------------------------------
+# E9 — foto lepas per peserta
+# ---------------------------------------------------------------------------
+METRIC_LABEL = {"precision": "Precision", "recall": "Recall", "f1": "F1", "ap": "AP"}
+
+
+def plot_folder_accuracy(out_dir: Path) -> list[Path]:
+    """Grafik 16: precision, recall, F1, AP per detektor pada IoU utama, galat = interval 95%."""
+    df = _read(out_dir, "e9_deteksi")
+    if df is None:
+        return []
+    primary = 0.5 if np.isclose(df["iou"], 0.5).any() else float(df["iou"].max())   # ambang utama PRD §7
+    df = df[np.isclose(df["iou"], primary)]
+    metrics = [m for m in METRIC_LABEL if df[m].notna().any()]
+    detectors = list(dict.fromkeys(df["detektor"]))
+    x = np.arange(len(metrics), dtype=float)
+    width = 0.6 / max(len(detectors), 1)
+    fig, ax = plt.subplots(figsize=(max(4.8, 1.3 * len(metrics) + 2.2), 3.9))
+    for i, name in enumerate(detectors):
+        row = df[df["detektor"] == name].iloc[0]
+        color, marker = _style(name)
+        value = np.array([row[m] for m in metrics], dtype=float)
+        low = np.array([row[f"{m}_low"] for m in metrics], dtype=float)
+        high = np.array([row[f"{m}_high"] for m in metrics], dtype=float)
+        err = np.vstack([np.nan_to_num(value - low), np.nan_to_num(high - value)])
+        offset = x + (i - (len(detectors) - 1) / 2) * width
+        ax.bar(offset, value, width * 0.85, color=color, alpha=0.25, edgecolor=color, linewidth=1)
+        ax.errorbar(offset, value, yerr=err, fmt=marker, color=color, ecolor=color, elinewidth=1.0, capsize=2.5,
+                    markersize=6, label=_label(name))
+        for xi, v in zip(offset, value):
+            if not np.isnan(v):
+                ax.annotate(f"{v:.2f}".replace(".", ","), (xi, 0.02), ha="center", va="bottom", fontsize=7.5,
+                            color=INK_2)
+    ax.set_xticks(x, [METRIC_LABEL[m] for m in metrics])
+    ax.set_ylim(0, 1.05)
+    ax.yaxis.set_major_formatter(_comma(1))
+    ax.set_ylabel("Nilai")
+    ax.grid(axis="x", visible=False)
+    ax.set_title("Akurasi deteksi terhadap crop manual, IoU ≥ 0,5", loc="left", pad=22)
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncols=len(detectors))
+    fig.text(0.01, -0.03, "Galat: Wilson 95% (precision, recall), bootstrap per peserta (F1, AP).", color=INK_2,
+             fontsize=8, ha="left")
+    return _save(fig, out_dir, "grafik16_e9_akurasi_deteksi")
+
+
+def plot_folder_iou(out_dir: Path) -> list[Path]:
+    """Grafik 17: sebaran IoU crop otomatis terhadap crop manual per detektor (0 = tidak terdeteksi)."""
+    df = _read(out_dir, "e9_crop_per_wajah")
+    if df is None:
+        return []
+    detectors = list(dict.fromkeys(df["detektor"]))
+    fig, ax = plt.subplots(figsize=(max(4.2, 1.4 * len(detectors) + 1.8), 3.9))
+    rng = np.random.default_rng(0)
+    for i, name in enumerate(detectors):
+        color, marker = _style(name)
+        values = df.loc[df["detektor"] == name, "iou"].to_numpy(dtype=float)
+        found = values[values > 0]
+        if found.size:
+            ax.boxplot(found, positions=[i], widths=0.45, showfliers=False, patch_artist=True,
+                       boxprops={"facecolor": color, "alpha": 0.18, "edgecolor": color},
+                       medianprops={"color": color, "linewidth": 2}, whiskerprops={"color": color},
+                       capprops={"color": color})
+        ax.scatter(i + rng.uniform(-0.16, 0.16, values.size), values, s=14, color=color, marker=marker, alpha=0.75,
+                   linewidths=0)
+    ax.axhline(0.5, color=INK_2, linewidth=1, linestyle="--")
+    ax.annotate("IoU 0,5", (len(detectors) - 0.5, 0.5), xytext=(0, 3), textcoords="offset points", ha="right",
+                fontsize=8, color=INK_2)
+    ax.set_xticks(range(len(detectors)), [_label(n) for n in detectors])
+    ax.set_xlim(-0.6, len(detectors) - 0.4)
+    ax.set_ylim(-0.03, 1.03)
+    ax.yaxis.set_major_formatter(_comma(1))
+    ax.set_ylabel("IoU crop otomatis vs manual")
+    ax.grid(axis="x", visible=False)
+    ax.set_title("Kecocokan crop otomatis dengan crop manual per wajah", loc="left")
+    fig.text(0.01, -0.03, "Titik = satu wajah; IoU 0 = wajah tidak punya crop otomatis. Kotak = kuartil wajah "
+             "yang ditemukan.", color=INK_2, fontsize=8, ha="left")
+    return _save(fig, out_dir, "grafik17_e9_iou_crop")
+
+
+def plot_folder_box_convention(out_dir: Path) -> list[Path]:
+    """Grafik 18: kotak deteksi dalam satuan crop manual (persegi [0,1]) — konvensi kotak tiap detektor."""
+    df = _read(out_dir, "e9_crop_per_wajah")
+    if df is None or "nx" not in df.columns:
+        return []
+    found = df[df["ditemukan"].astype(bool)]
+    detectors = [n for n in dict.fromkeys(df["detektor"]) if (found["detektor"] == n).any()]
+    if not detectors:
+        return []
+    fig, axes = plt.subplots(1, len(detectors), figsize=(3.3 * len(detectors), 3.6), squeeze=False)
+    for ax, name in zip(axes[0], detectors):
+        color, _ = _style(name)
+        part = found[found["detektor"] == name]
+        for row in part.itertuples():
+            ax.add_patch(plt.Rectangle((row.nx, row.ny), row.nw, row.nh, fill=False, edgecolor=color, alpha=0.25,
+                                       linewidth=0.8))
+        med = part[["nx", "ny", "nw", "nh"]].median()
+        ax.add_patch(plt.Rectangle((med.nx, med.ny), med.nw, med.nh, fill=False, edgecolor=color, linewidth=2.4))
+        ax.add_patch(plt.Rectangle((0, 0), 1, 1, fill=False, edgecolor=INK, linewidth=1.6, linestyle="--"))
+        ax.set_xlim(-0.6, 1.6)
+        ax.set_ylim(1.6, -0.6)          # sumbu y citra: ke bawah
+        ax.set_aspect("equal")
+        ticks = [-0.5, 0.0, 0.5, 1.0, 1.5]
+        ax.set_xticks(ticks)
+        ax.set_yticks(ticks)
+        ax.xaxis.set_major_formatter(_comma(1))
+        ax.yaxis.set_major_formatter(_comma(1))
+        ax.set_title(f"{_label(name)} (n={len(part)})", loc="left", fontsize=10)
+    axes[0][0].set_ylabel("tinggi crop manual")
+    for ax in axes[0]:
+        ax.set_xlabel("lebar crop manual")
+    fig.suptitle("Konvensi kotak: deteksi relatif terhadap crop manual (garis putus = manual, tebal = median)",
+                 x=0.01, ha="left", fontsize=11, color=INK, y=1.02)
+    return _save(fig, out_dir, "grafik18_e9_konvensi_kotak")
+
+
+def plot_folder_recognition(out_dir: Path) -> list[Path]:
+    """Grafik 19: akurasi rank-1 dan DIR LBPH per sumber crop, galat = Wilson 95%."""
+    df = _read(out_dir, "e9_pengenalan")
+    if df is None:
+        return []
+    sources = list(df["sumber"])
+    metrics = [("akurasi", "Akurasi rank-1"), ("dir", "DIR (jarak ≤ ambang)")]
+    x = np.arange(len(metrics), dtype=float)
+    width = 0.6 / max(len(sources), 1)
+    fig, ax = plt.subplots(figsize=(max(4.6, 1.2 * len(sources) + 3.0), 3.9))
+    for i, row in enumerate(df.itertuples(index=False)):
+        source = row.sumber
+        color, marker = _style(source)
+        value = np.array([getattr(row, m) for m, _ in metrics], dtype=float)
+        low = np.array([getattr(row, f"{m}_low") for m, _ in metrics], dtype=float)
+        high = np.array([getattr(row, f"{m}_high") for m, _ in metrics], dtype=float)
+        offset = x + (i - (len(sources) - 1) / 2) * width
+        ax.bar(offset, value, width * 0.85, color=color, alpha=0.25, edgecolor=color, linewidth=1)
+        ax.errorbar(offset, value, yerr=np.vstack([np.nan_to_num(value - low), np.nan_to_num(high - value)]),
+                    fmt=marker, color=color, ecolor=color, elinewidth=1.0, capsize=2.5, markersize=6,
+                    label=_source_label(source))
+    ax.set_xticks(x, [label for _, label in metrics])
+    _accuracy_axis(ax)
+    ax.set_ylabel("Proporsi foto uji")
+    ax.grid(axis="x", visible=False)
+    ax.set_title("Pengenalan LBPH: crop manual vs crop otomatis", loc="left", pad=22)
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncols=len(sources))
+    fig.text(0.01, -0.03, "Galat: Wilson 95%. Foto uji yang wajahnya tidak terdeteksi dihitung gagal.", color=INK_2,
+             fontsize=8, ha="left")
+    return _save(fig, out_dir, "grafik19_e9_pengenalan")
+
+
 PLOTTERS = {
     "e1": [plot_recall_vs_distance, plot_width_loglog, plot_recall_vs_size, plot_resolution_effect,
            lambda d: plot_pr_curves(d, "e1")],
@@ -492,6 +759,8 @@ PLOTTERS = {
     "e5": [],
     "e6": [plot_pose, plot_expression, plot_occlusion],
     "e7": [plot_blur],
+    "e8": [plot_recognition_distance, plot_recognition_conditions, plot_recognition_threshold],
+    "e9": [plot_folder_accuracy, plot_folder_iou, plot_folder_box_convention, plot_folder_recognition],
 }
 
 
